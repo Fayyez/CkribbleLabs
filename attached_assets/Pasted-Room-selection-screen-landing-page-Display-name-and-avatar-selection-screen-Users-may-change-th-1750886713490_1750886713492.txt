@@ -1,0 +1,31 @@
+Room selection screen / landing page:
+Display name and avatar selection screen. Users may change the display name easily anytime. Avatars are also constructed/selected on this screen
+Room selection/creation - users may either join a room with either a link or a code or choose to create a new private room. Max room capacity is 22 people for all rooms.
+	Game room creation screen:
+If the user chooses to create a private room, this screen will appear where the user can set custom rules for his game. Rules include:
+Number of rounds (2 to 10) - default is 3
+Max length of words (max is 25 characters) - default is 15 characters
+Themed game checkbox and field. Default is not selected and disabled. : if a themed game is selected then an api call is made to an LLM for themed words fetching. For themed games, the check for min and max length of word is disabled.
+Teamed matched checkbox. Normally each player plays the game individually but if this option is selected then prompt the user to create two teams (given team names). In teamed mode all players joining the room are required to join one of the two teams.
+Once the host presses the create button, a waiting room is opened. All players joining the room are moved to this waiting room when they join. After 5 minutes, the game starts automatically. The host may also choose to start a game manually with a start now button, once at least 2 players (including the creator of room or host) have joined the waiting room. For teamed games, manual start is only allowed once each team has atleast one player
+Game Page:
+Game page should have the following components:
+A drawing canvas where a user can draw with simple tools (e.g., color selection, brush size selection, eraser, undo/redo buttons). The drawing made by one user should be visible to all players in real-time who are part of the game room. After each turn the canvas is cleaned.
+An area to display the word to be guessed (or underscores for letters) on top of the screen. A clock timer is also shown here showing the remaining time of the turn. Once correctly guessed, the word becomes visible to the player who guessed correctly.
+An input field for players to submit their guesses. This is called the guess chat box. This is shared among all players (but correct guesses are hidden). Also implement a “you are close” message if the guess is very close to the actual word (use Levenshtein distance). Also implement a rate limiter for this guess field. Always display the number of characters currently typed in the field at all times.
+Each guesser should be allowed to react with a select number of emojis (4-5 appropriate predefined emojis) to someone’s drawing. The emoji reactions are visible to all players of the game.
+Current leaderboard showing individual scores of all players. For teamed games, highlight with team color the names of the players playing the game.
+
+Game Rules:
+Scoring system: Implement a scoring system for the game, where each correct guess is given points, relative to the remaining time for all the guessers. The person drawing also gets a higher score if more people correctly guess the drawing in less time. Create your own formula for scoring. Tied players are given the same position.
+Turns and Rounds: 
+Each turn ends when all players have successfully guessed the word.
+Non-teamed games: every player gets to draw once per round on their turn. While all other players are guessers for that turn. If any player leaves mid-game, that player is skipped for the remaining rounds and removed from the game. Rejoining is not allowed once the game starts.
+Teamed games: There must be at least one player in each team for this mode to start. The rounds work the same as for non-teamed games but the scores are averaged at the end of the game.
+Word generation: this is achieved through a json file stored in a local database. There will be multiple json files for each theme and category of words. In each turn, the user is given three options of words, the user can select any one of those three words.
+Winning screen/Popup:
+This screen is shown at the end of all the rounds of a game. For both teamed and non-teamed games, show the individual leaderboard with the 1st ranked player. In teamed games, also show prominently which team won and make fun of the losing team.
+
+General guidelines:
+UI must be minimalistic, childish-funky, creative-animate, and optimized for desktop screens but also responsive for mobile
+Use a modular approach such that design, dimensions, color/theme, game rules are easy to change in future.
