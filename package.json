@@ -1,0 +1,28 @@
+{
+  "name": "ckribblelabs",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fayyez/CkribbleLabs.git"
+  },
+  "keywords": [
+    "scribble"
+  ],
+  "author": "fayyez",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Fayyez/CkribbleLabs/issues"
+  },
+  "homepage": "https://github.com/Fayyez/CkribbleLabs#readme",
+  "dependencies": {
+    "@reduxjs/toolkit": "^2.8.2"
+  },
+  "devDependencies": {
+    "supabase": "^2.26.9"
+  }
+}

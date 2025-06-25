@@ -1,0 +1,11 @@
+{
+    "roomId": "room-uuid",
+    "drawerId": "user-uuid",
+    "selectedWord": "cheetah",
+    "roundNumber": 1,
+    "usedWords": [
+        "giraffe",
+        "lion"
+    ],
+    "drawingTime": 60
+}

@@ -1,0 +1,25 @@
+{
+    "roomId": "uuid-string",
+    "hostId": "user-uuid",
+    "players": [
+        {
+            "id": "user1",
+            "team": "Red"
+        },
+        {
+            "id": "user2",
+            "team": "Blue"
+        },
+      ...
+    ],
+    "settings": {
+        "rounds": 3,
+        "theme": "animals",
+        "isTeamGame": true,
+        "isThemedGame": true,
+        "teamNames": [
+            "Red",
+            "Blue"
+        ]
+    }
+}

@@ -1,0 +1,14 @@
+{
+    "hostId": "user-uuid",
+    "settings": {
+        "rounds": 5,
+        "maxWordLength": 15,
+        "theme": "animals",
+        "isThemedGame": true,
+        "isTeamGame": true,
+        "teamNames": [
+            "Red",
+            "Blue"
+        ]
+    }
+}
