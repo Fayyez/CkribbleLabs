@@ -2,7 +2,7 @@
   "name": "ckribblelabs",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "private": true,
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
@@ -51,6 +51,5 @@
   },
   "devDependencies": {
     "supabase": "^2.26.9"
-  },
-  "type": "module"
+  }
 }
