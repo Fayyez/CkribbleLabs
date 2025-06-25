@@ -1,0 +1,29 @@
+{
+    "roomId": "abc-123",
+    "drawerId": "user1",
+    "correctGuessers": [
+        {
+            "id": "user2",
+            "timeTaken": 22
+        }
+    ],
+    "allPlayers": [
+        "user1",
+        "user2",
+        "user3"
+    ],
+    "activePlayers": [
+        "user2",
+        "user3"
+    ],
+    "currentTurn": 3,
+    "currentRound": 1,
+    "roundsTotal": 3,
+    "isTeamGame": false,
+    "previousScores": {
+        "user1": 100,
+        "user2": 80,
+        "user3": 50
+    },
+    "drawingTime": 60
+}
