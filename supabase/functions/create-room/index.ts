@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std/http/server.ts";
+import { corsHeaders } from "../__shared_data/cors.ts";
 
 type RoomSettings = {
   rounds: number;
@@ -15,11 +16,22 @@ type RequestBody = {
 };
 
 serve(async (req) => {
+  // Handle CORS preflight requests
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders });
+  }
+
   try {
     const { hostId, settings }: RequestBody = await req.json();
 
     if (!hostId) {
-      return new Response(JSON.stringify({ error: "Missing hostId" }), { status: 400 });
+      return new Response(
+        JSON.stringify({ error: "Missing hostId" }), 
+        { 
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        }
+      );
     }
 
     const roomId = crypto.randomUUID();
@@ -33,12 +45,21 @@ serve(async (req) => {
       expiresAt: expiresAt.toISOString()
     };
 
-    return new Response(JSON.stringify(room), { status: 200 });
+    return new Response(
+      JSON.stringify(room), 
+      { 
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      }
+    );
   } catch (err) {
     console.error("create-room error:", err);
     return new Response(
       JSON.stringify({ error: "Internal Server Error" }),
-      { status: 500 }
+      { 
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      }
     );
   }
 });

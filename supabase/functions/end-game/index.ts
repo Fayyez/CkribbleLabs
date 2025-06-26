@@ -39,6 +39,16 @@ type Leaderboard = Record<string, number>;
 type TeamMap = Record<string, string>;
 
 serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", {
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+        "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+      },
+    });
+  }
+
   try {
     const { roomId, leaderboard, isTeamGame, teamMap } = await req.json();
 
@@ -86,7 +96,14 @@ serve(async (req) => {
         winningTeam,
         leaderboard,
       }),
-      { status: 200 }
+      {
+        status: 200,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+          "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+        }
+      }
     );
   } catch (err) {
     console.error("end-game error:", err);
