@@ -45,11 +45,44 @@ const canvasSlice = createSlice({
     },
     addRemotePath: (state, action) => {
       const path = action.payload;
-      const existingIndex = state.paths.findIndex(p => p.id === path.id);
+      
+      // Validate path structure
+      if (!path || !path.id || !Array.isArray(path.points) || path.points.length === 0) {
+        console.warn('🚫 Invalid remote path received:', path);
+        return;
+      }
+      
+      // Validate all points in the path
+      const validPoints = path.points.filter(point => 
+        point && 
+        typeof point.x === 'number' && 
+        typeof point.y === 'number' &&
+        !isNaN(point.x) && 
+        !isNaN(point.y)
+      );
+      
+      if (validPoints.length === 0) {
+        console.warn('🚫 Remote path has no valid points:', path);
+        return;
+      }
+      
+      // Create a clean path object
+      const cleanPath = {
+        id: path.id,
+        points: validPoints,
+        color: path.color || '#000000',
+        size: Math.max(1, Math.min(50, path.size || 5)), // Clamp size
+        tool: path.tool || 'brush',
+        timestamp: path.timestamp || Date.now()
+      };
+      
+      console.log('🎨 Adding remote path with', validPoints.length, 'valid points');
+      
+      const existingIndex = state.paths.findIndex(p => p.id === cleanPath.id);
       if (existingIndex !== -1) {
-        state.paths[existingIndex] = path;
+        state.paths[existingIndex] = cleanPath;
       } else {
-        state.paths.push(path);
+        state.paths.push(cleanPath);
       }
     },
     setBrushSize: (state, action) => {

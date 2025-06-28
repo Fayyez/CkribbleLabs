@@ -189,6 +189,33 @@ serve(async (req) => {
         room.players = room.players.filter(p => p.id !== playerId);
         console.log(`Player ${playerId} left room ${roomId}. Players: ${playerCountBefore} -> ${room.players.length}`);
         
+        // If room is now empty, delete it
+        if (room.players.length === 0) {
+          console.log(`Room ${roomId} is empty, deleting...`);
+          const { error: deleteError } = await supabase
+            .from('rooms')
+            .delete()
+            .eq('room_id', roomId);
+            
+          if (deleteError) {
+            console.error('Error deleting empty room:', deleteError);
+          } else {
+            console.log(`Successfully deleted empty room ${roomId}`);
+          }
+          
+          return new Response(
+            JSON.stringify({ 
+              success: true,
+              roomDeleted: true,
+              message: "Room deleted - no players remaining"
+            }), 
+            { 
+              status: 200,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            }
+          );
+        }
+        
         // If host left, assign new host
         if (room.hostId === playerId && room.players.length > 0) {
           room.hostId = room.players[0].id;

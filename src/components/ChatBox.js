@@ -17,7 +17,8 @@ const ChatBox = ({ onGuessSubmit, canGuess = true }) => {
     isGuessCorrect,
     isGuessClose,
     rateLimitedUntil,
-    lastGuessTime
+    lastGuessTime,
+    correctGuesses
   } = useSelector(state => state.chat);
   
   const { user, profile } = useSelector(state => state.auth);
@@ -33,6 +34,7 @@ const ChatBox = ({ onGuessSubmit, canGuess = true }) => {
 
   const isRateLimited = rateLimitedUntil && Date.now() < rateLimitedUntil;
   const isDrawer = user?.id === drawerId;
+  const hasGuessedCorrectly = correctGuesses.some(g => g.playerId === user?.id);
   const shouldShowInput = canGuess && isActive && !isDrawer && !isRateLimited;
 
   const handleSubmit = async (e) => {
@@ -99,7 +101,7 @@ const ChatBox = ({ onGuessSubmit, canGuess = true }) => {
         {isDrawer && (
           <span className="drawer-badge">🎨 Drawing</span>
         )}
-        {!canGuess && !isDrawer && (
+        {hasGuessedCorrectly && !isDrawer && isActive && currentWord && (
           <span className="guessed-badge">✅ Guessed!</span>
         )}
       </div>
@@ -180,7 +182,7 @@ const ChatBox = ({ onGuessSubmit, canGuess = true }) => {
 
       {!shouldShowInput && !isDrawer && (
         <div className="guess-disabled">
-          {!canGuess ? "You've already guessed correctly! 🎉" : 
+          {hasGuessedCorrectly ? "You've already guessed correctly! 🎉" : 
            !isActive ? "Game not active" :
            !currentWord ? "Waiting for word selection..." : 
            "You can't guess right now"}

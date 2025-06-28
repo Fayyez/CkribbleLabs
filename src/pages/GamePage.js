@@ -20,6 +20,7 @@ import {
 } from '../redux/slices/gameSlice';
 import { setCanDraw, clearCanvas, addRemotePath } from '../redux/slices/canvasSlice';
 import { addMessage, addCorrectGuess, setGuessResult, clearChat } from '../redux/slices/chatSlice';
+import { setPlayers, addPlayer, removePlayer } from '../redux/slices/roomSlice';
 
 const GamePage = () => {
   const { roomId } = useParams();
@@ -46,6 +47,31 @@ const GamePage = () => {
 
   const isDrawer = user?.id === drawerId;
   const hasGuessedCorrectly = correctGuesses.some(g => g.playerId === user?.id);
+
+  // Initialize room state if needed
+  useEffect(() => {
+    const initializeRoomState = async () => {
+      if (!roomId || !user?.id || players.length > 0) return;
+      
+      try {
+        console.log('🔧 Initializing room state for GamePage');
+        const response = await callEdgeFunction('join-room', {
+          roomId,
+          playerId: user.id,
+          action: 'get-state'
+        });
+        
+        if (response?.success && response?.room) {
+          console.log('🏠 Got room state:', response.room);
+          dispatch(setPlayers(response.room.players || []));
+        }
+      } catch (error) {
+        console.error('❌ Failed to initialize room state:', error);
+      }
+    };
+    
+    initializeRoomState();
+  }, [roomId, user?.id, players.length, dispatch]);
 
   // Debug drawer state changes
   useEffect(() => {
@@ -125,6 +151,67 @@ const GamePage = () => {
     const channel = supabase.channel(`room:${roomId}`);
 
     channel
+      .on('broadcast', { event: 'player:join' }, (payload) => {
+        console.log('👤 Player join event received in GamePage:', payload);
+        const playerData = payload.payload || payload;
+        if (playerData && playerData.id && !players.find(p => p.id === playerData.id)) {
+          dispatch(addPlayer(playerData));
+        }
+      })
+      .on('broadcast', { event: 'player:leave' }, (payload) => {
+        console.log('👋 Player leave event received in GamePage:', payload);
+        const playerData = payload.payload || payload;
+        
+        if (playerData?.playerId) {
+          dispatch(removePlayer(playerData.playerId));
+          
+          // Add a system message about the player leaving
+          dispatch(addMessage({
+            type: 'system',
+            text: `${playerData.playerName || 'A player'} left the game`,
+            timestamp: Date.now()
+          }));
+          
+          // Check if we need to end the game due to insufficient players
+          const remainingPlayers = players.filter(p => p.id !== playerData.playerId);
+          console.log('👥 Remaining players after leave:', remainingPlayers.length);
+          
+          // For non-team games, end if only 1 player remains
+          if (!settings?.isTeamGame && remainingPlayers.length <= 1) {
+            console.log('🏁 Ending game - not enough players remaining');
+            setTimeout(() => {
+              dispatch(endGame({
+                winner: remainingPlayers[0]?.id || null,
+                reason: 'insufficient_players',
+                finalScores: scores
+              }));
+            }, 2000);
+          }
+          // For team games, check if entire team left
+          else if (settings?.isTeamGame) {
+            const teamCounts = remainingPlayers.reduce((counts, player) => {
+              const team = player.team || 'Red';
+              counts[team] = (counts[team] || 0) + 1;
+              return counts;
+            }, {});
+            
+            const activeTeams = Object.keys(teamCounts).filter(team => teamCounts[team] > 0);
+            console.log('🏷️ Active teams:', activeTeams, 'Team counts:', teamCounts);
+            
+            if (activeTeams.length <= 1) {
+              console.log('🏁 Ending team game - only one team remains');
+              setTimeout(() => {
+                dispatch(endGame({
+                  winner: activeTeams[0] || null,
+                  reason: 'team_insufficient',
+                  finalScores: scores,
+                  teamScores: teamCounts
+                }));
+              }, 2000);
+            }
+          }
+        }
+      })
       .on('broadcast', { event: 'game:start' }, (event) => {
         console.log('🎮 GAME START EVENT received:', event);
         const payload = event.payload || event;
@@ -177,15 +264,29 @@ const GamePage = () => {
           console.log('👥 User is not drawer, drawerId is:', payload.drawerId);
         }
       })
-      .on('broadcast', { event: 'word:selected' }, (payload) => {
-        console.log('📝 WORD SELECTED EVENT received:', payload);
-        dispatch(selectWord(payload.word || payload.selectedWord));
-        dispatch(setWordOptions([])); // Clear word options for all players
+      .on('broadcast', { event: 'word:selected' }, (event) => {
+        console.log('📝 WORD SELECTED EVENT received:', event);
+        const payload = event.payload || event;
+        const selectedWord = payload.word || payload.selectedWord;
+        console.log('📝 Extracted word:', selectedWord, 'wordLength:', payload.wordLength);
+        
+        if (selectedWord) {
+          dispatch(selectWord(selectedWord));
+          dispatch(setWordOptions([])); // Clear word options for all players
+          console.log('📝 Word selection processed for all players');
+        } else {
+          console.error('❌ No word found in word:selected event payload:', payload);
+        }
       })
       .on('broadcast', { event: 'canvas:update' }, (payload) => {
         if (payload.playerId !== user?.id) {
+          console.log('🎨 Received remote canvas update:', payload);
           dispatch(addRemotePath(payload.path));
         }
+      })
+      .on('broadcast', { event: 'canvas:clear' }, (payload) => {
+        console.log('🧹 Canvas clear event received');
+        dispatch(clearCanvas());
       })
       .on('broadcast', { event: 'chat:guess' }, (payload) => {
         console.log('💬 CHAT GUESS EVENT received:', payload);
@@ -207,6 +308,10 @@ const GamePage = () => {
           text: `${payload.playerName}'s guess is very close!`,
           timestamp: Date.now()
         }));
+      })
+      .on('broadcast', { event: 'timer:update' }, (payload) => {
+        console.log('⏰ Timer update received:', payload.timeRemaining);
+        dispatch(updateTimer(payload.timeRemaining));
       })
       .on('broadcast', { event: 'game:round-end' }, (payload) => {
         console.log('🏁 ROUND END EVENT received:', payload);
@@ -266,9 +371,6 @@ const GamePage = () => {
         console.log('🎉 GAME OVER EVENT received:', payload);
         dispatch(endGame(payload));
       })
-      .on('broadcast', { event: 'timer:update' }, (payload) => {
-        dispatch(updateTimer(payload.timeRemaining));
-      })
       .subscribe();
 
     console.log('📡 Channel subscribed for room:', roomId);
@@ -278,6 +380,77 @@ const GamePage = () => {
       supabase.removeChannel(channel);
     };
   }, [roomId, user?.id, dispatch, players, settings, turnOrder]);
+
+  // Timer synchronization for drawer
+  useEffect(() => {
+    if (!isDrawer || !isActive || !currentWord) return;
+
+    const timerInterval = setInterval(() => {
+      dispatch((dispatch, getState) => {
+        const currentTime = getState().game.timeRemaining;
+        const newTime = currentTime - 1;
+        
+        dispatch(updateTimer(newTime));
+        
+        // Broadcast timer update to other players
+        const channel = supabase.channel(`room:${roomId}`);
+        channel.send({
+          type: 'broadcast',
+          event: 'timer:update',
+          payload: {
+            timeRemaining: newTime
+          }
+        });
+        
+        // Auto-end round when time runs out
+        if (newTime <= 0) {
+          console.log('⏰ Timer reached 0, ending round');
+          handleTimeUp();
+        }
+      });
+    }, 1000);
+
+    return () => clearInterval(timerInterval);
+  }, [isDrawer, isActive, currentWord, roomId, handleTimeUp]);
+
+  // Handle time up
+  const handleTimeUp = useCallback(async () => {
+    if (!isDrawer) return;
+    
+    console.log('⏰ Time ran out, ending round');
+    const playerScores = correctGuesses.map(g => ({
+      playerId: g.playerId,
+      points: calculatePoints(g.timeTaken || 0),
+      timeTaken: g.timeTaken || 0,
+      guessedCorrectly: true
+    }));
+
+    console.log('📊 Ending round due to timeout with scores:', playerScores);
+
+    try {
+      const roundResult = await callEdgeFunction('end-round', {
+        roomId,
+        currentDrawerId: drawerId,
+        word: currentWord,
+        playerScores,
+        currentRound,
+        totalRounds,
+        turnOrder: turnOrder || players.map(p => p.id),
+        currentTurnIndex: currentTurnIndex || 0,
+        reason: 'timeout'
+      });
+
+      console.log('📦 end-round response for timeout:', roundResult);
+      const channel = supabase.channel(`room:${roomId}`);
+      channel.send({
+        type: 'broadcast',
+        event: 'game:round-end',
+        payload: roundResult
+      });
+    } catch (error) {
+      console.error('❌ Failed to end round on timeout:', error);
+    }
+  }, [isDrawer, roomId, currentWord, correctGuesses, calculatePoints, drawerId, currentRound, totalRounds, turnOrder, currentTurnIndex, players]);
 
   // Handle canvas path updates
   const handlePathUpdate = useCallback((path) => {
@@ -290,6 +463,22 @@ const GamePage = () => {
       event: 'canvas:update',
       payload: { 
         path,
+        playerId: user.id,
+        timestamp: Date.now()
+      }
+    });
+  }, [isDrawer, roomId, user?.id]);
+
+  // Handle canvas clear
+  const handleCanvasClear = useCallback(() => {
+    if (!isDrawer) return;
+    
+    console.log('🧹 Canvas clear from drawer');
+    const channel = supabase.channel(`room:${roomId}`);
+    channel.send({
+      type: 'broadcast',
+      event: 'canvas:clear',
+      payload: { 
         playerId: user.id,
         timestamp: Date.now()
       }
@@ -466,54 +655,86 @@ const GamePage = () => {
 
       // Start the round timer
       console.log('⏰ Starting round timer');
-      channel.send({
-        type: 'broadcast',
-        event: 'timer:start',
-        payload: {
-          timeRemaining: settings?.drawingTime || 60
-        }
-      });
+      const initialTime = settings?.drawingTime || 60;
+      dispatch(updateTimer(initialTime));
+      
+      // Broadcast timer start to all players
+      setTimeout(() => {
+        channel.send({
+          type: 'broadcast',
+          event: 'timer:update',
+          payload: {
+            timeRemaining: initialTime
+          }
+        });
+      }, 100);
     } catch (error) {
       console.error('❌ Error selecting word:', error);
     }
   }, [isDrawer, roomId, user?.id, dispatch, currentRound, currentTurnIndex, turnOrder, players, settings]);
 
-  // Auto-end round when time runs out
+  // Handle player leaving (cleanup)
   useEffect(() => {
-    if (timeRemaining <= 0 && isActive && isDrawer) {
-      console.log('⏰ Time ran out, ending round');
-      const playerScores = correctGuesses.map(g => ({
-        playerId: g.playerId,
-        points: calculatePoints(g.timeTaken || 0),
-        timeTaken: g.timeTaken || 0,
-        guessedCorrectly: true
-      }));
+    const handleBeforeUnload = async () => {
+      if (roomId && user?.id) {
+        try {
+          // Don't await this since the page is closing
+          callEdgeFunction('join-room', {
+            roomId,
+            playerId: user.id,
+            action: 'leave'
+          });
+        } catch (error) {
+          console.error('Error leaving room on unload:', error);
+        }
+      }
+    };
 
-      console.log('📊 Ending round due to timeout with scores:', playerScores);
+    const handleVisibilityChange = () => {
+      if (document.hidden && roomId && user?.id) {
+        // User switched tabs or minimized browser, but don't leave room
+        console.log('🙈 User went away, but staying in room');
+      }
+    };
 
-      callEdgeFunction('end-round', {
-        roomId,
-        currentDrawerId: drawerId,
-        word: currentWord,
-        playerScores,
-        currentRound,
-        totalRounds,
-        turnOrder: turnOrder || players.map(p => p.id),
-        currentTurnIndex: currentTurnIndex || 0,
-        reason: 'timeout'
-      }).then(roundResult => {
-        console.log('📦 end-round response for timeout:', roundResult);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [roomId, user?.id]);
+
+  // Cleanup when component unmounts (navigation away)
+  useEffect(() => {
+    return () => {
+      if (roomId && user?.id && profile) {
+        console.log('🚪 GamePage unmounting, leaving room');
+        
+        // Broadcast leave event to other players first
         const channel = supabase.channel(`room:${roomId}`);
         channel.send({
           type: 'broadcast',
-          event: 'game:round-end',
-          payload: roundResult
+          event: 'player:leave',
+          payload: {
+            playerId: user.id,
+            playerName: profile.displayName || 'Anonymous',
+            timestamp: Date.now()
+          }
         });
-      }).catch(error => {
-        console.error('❌ Failed to end round on timeout:', error);
-      });
-    }
-  }, [timeRemaining, isActive, isDrawer, roomId, currentWord, correctGuesses, calculatePoints, drawerId, currentRound, totalRounds, turnOrder, currentTurnIndex, players]);
+        
+        // Then actually leave the room
+        callEdgeFunction('join-room', {
+          roomId,
+          playerId: user.id,
+          action: 'leave'
+        }).catch(error => {
+          console.error('Error leaving room on unmount:', error);
+        });
+      }
+    };
+  }, [roomId, user?.id, profile]);
 
   if (isGameOver) {
     console.log('🎉 Rendering GameOverScreen');
@@ -581,8 +802,11 @@ const GamePage = () => {
       <div className="game-content">
         {/* Left side - Drawing area */}
         <div className="drawing-section">
-          <Canvas onPathUpdate={handlePathUpdate} />
-          {isDrawer && <DrawingTools />}
+          <Canvas 
+            onPathUpdate={handlePathUpdate} 
+            onCanvasClear={handleCanvasClear}
+          />
+          {isDrawer && <DrawingTools onCanvasClear={handleCanvasClear} />}
         </div>
 
         {/* Right side - Leaderboard and Chat */}

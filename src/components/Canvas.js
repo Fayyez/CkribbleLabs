@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { startPath, addPoint, endPath, addRemotePath } from '../redux/slices/canvasSlice';
 
-const Canvas = ({ onPathUpdate }) => {
+const Canvas = ({ onPathUpdate, onCanvasClear }) => {
   const canvasRef = useRef(null);
   const [isConnected, setIsConnected] = useState(true);
   const dispatch = useDispatch();
@@ -104,36 +104,70 @@ const Canvas = ({ onPathUpdate }) => {
     
     // Draw all completed paths
     paths.forEach(path => {
-      if (path.points && path.points.length > 1) {
+      // Validate path structure
+      if (!path || !path.points || !Array.isArray(path.points) || path.points.length < 2) {
+        return; // Skip invalid paths
+      }
+      
+      // Validate all points in the path
+      const validPoints = path.points.filter(point => 
+        point && 
+        typeof point.x === 'number' && 
+        typeof point.y === 'number' &&
+        !isNaN(point.x) && 
+        !isNaN(point.y)
+      );
+      
+      if (validPoints.length < 2) {
+        return; // Skip paths without enough valid points
+      }
+      
+      try {
         ctx.beginPath();
         ctx.globalCompositeOperation = path.tool === 'eraser' ? 'destination-out' : 'source-over';
         ctx.strokeStyle = path.tool === 'eraser' ? 'rgba(0,0,0,1)' : (path.color || '#000000');
-        ctx.lineWidth = path.size || 5;
+        ctx.lineWidth = Math.max(1, Math.min(50, path.size || 5)); // Clamp size between 1-50
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         
-        ctx.moveTo(path.points[0].x, path.points[0].y);
-        for (let i = 1; i < path.points.length; i++) {
-          ctx.lineTo(path.points[i].x, path.points[i].y);
+        ctx.moveTo(validPoints[0].x, validPoints[0].y);
+        for (let i = 1; i < validPoints.length; i++) {
+          ctx.lineTo(validPoints[i].x, validPoints[i].y);
         }
         ctx.stroke();
+      } catch (error) {
+        console.error('Error drawing path:', error, path);
       }
     });
     
     // Draw current path being drawn
-    if (currentPath && currentPath.points && currentPath.points.length > 1) {
-      ctx.beginPath();
-      ctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
-      ctx.strokeStyle = tool === 'eraser' ? 'rgba(0,0,0,1)' : color;
-      ctx.lineWidth = brushSize;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
+    if (currentPath && currentPath.points && Array.isArray(currentPath.points) && currentPath.points.length > 1) {
+      const validPoints = currentPath.points.filter(point => 
+        point && 
+        typeof point.x === 'number' && 
+        typeof point.y === 'number' &&
+        !isNaN(point.x) && 
+        !isNaN(point.y)
+      );
       
-      ctx.moveTo(currentPath.points[0].x, currentPath.points[0].y);
-      for (let i = 1; i < currentPath.points.length; i++) {
-        ctx.lineTo(currentPath.points[i].x, currentPath.points[i].y);
+      if (validPoints.length >= 2) {
+        try {
+          ctx.beginPath();
+          ctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
+          ctx.strokeStyle = tool === 'eraser' ? 'rgba(0,0,0,1)' : color;
+          ctx.lineWidth = Math.max(1, Math.min(50, brushSize)); // Clamp size between 1-50
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          
+          ctx.moveTo(validPoints[0].x, validPoints[0].y);
+          for (let i = 1; i < validPoints.length; i++) {
+            ctx.lineTo(validPoints[i].x, validPoints[i].y);
+          }
+          ctx.stroke();
+        } catch (error) {
+          console.error('Error drawing current path:', error, currentPath);
+        }
       }
-      ctx.stroke();
     }
   }, [paths, currentPath, brushSize, color, tool]);
 

@@ -81,8 +81,23 @@ const gameSlice = createSlice({
       });
     },
     selectWord: (state, action) => {
-      state.currentWord = action.payload;
+      console.log('📝 Redux selectWord action payload:', action.payload);
+      const word = action.payload;
+      state.currentWord = word;
+      state.wordLength = word ? word.length : 0;
       state.wordOptions = [];
+      
+      // Activate the game when word is selected
+      if (word) {
+        state.isActive = true;
+        console.log('✅ Game activated after word selection');
+      }
+      
+      console.log('📝 Redux state after selectWord:', {
+        currentWord: state.currentWord,
+        wordLength: state.wordLength,
+        isActive: state.isActive
+      });
     },
     setWordOptions: (state, action) => {
       state.wordOptions = action.payload;
