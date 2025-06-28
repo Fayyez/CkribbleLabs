@@ -12,7 +12,10 @@ const WORD_BANK_PATH = "../__shared_data/wordbank"
 serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+    return new Response('ok', { 
+      status: 200,
+      headers: corsHeaders 
+    });
   }
 
   const { theme = "default", count = 3, usedWords = [] }: RequestBody = await req.json();

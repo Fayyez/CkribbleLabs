@@ -1,4 +1,3 @@
-
 import { createSlice } from '@reduxjs/toolkit';
 
 const initialState = {
@@ -82,7 +81,10 @@ const canvasSlice = createSlice({
       state.historyIndex = 0;
     },
     setCanDraw: (state, action) => {
+      console.log('🎨 Redux setCanDraw called with:', action.payload);
+      console.log('🎨 Previous canDraw state:', state.canDraw);
       state.canDraw = action.payload;
+      console.log('🎨 New canDraw state:', state.canDraw);
     },
   },
 });

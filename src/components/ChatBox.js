@@ -1,12 +1,11 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { setCurrentGuess, addMessage, addReaction } from '../redux/slices/chatSlice';
-import { callEdgeFunction } from '../lib/supabase';
+import { setCurrentGuess, addMessage, addReaction, setRateLimit } from '../redux/slices/chatSlice';
 
 const EMOJI_REACTIONS = ['👍', '😂', '😮', '🤔', '🔥'];
+const RATE_LIMIT_DELAY = 1000; // 1 second between guesses
 
-const ChatBox = ({ onGuessSubmit }) => {
+const ChatBox = ({ onGuessSubmit, canGuess = true }) => {
   const dispatch = useDispatch();
   const messagesEndRef = useRef(null);
   const [message, setMessage] = useState('');
@@ -17,11 +16,12 @@ const ChatBox = ({ onGuessSubmit }) => {
     currentGuess,
     isGuessCorrect,
     isGuessClose,
-    rateLimitedUntil
+    rateLimitedUntil,
+    lastGuessTime
   } = useSelector(state => state.chat);
   
   const { user, profile } = useSelector(state => state.auth);
-  const { drawerId, isActive } = useSelector(state => state.game);
+  const { drawerId, isActive, currentWord } = useSelector(state => state.game);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -33,24 +33,24 @@ const ChatBox = ({ onGuessSubmit }) => {
 
   const isRateLimited = rateLimitedUntil && Date.now() < rateLimitedUntil;
   const isDrawer = user?.id === drawerId;
-  const canGuess = isActive && !isDrawer && !isRateLimited;
+  const shouldShowInput = canGuess && isActive && !isDrawer && !isRateLimited;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!message.trim() || !canGuess) return;
+    if (!message.trim() || !shouldShowInput) return;
 
     const guess = message.trim();
+    
+    // Check rate limiting
+    if (lastGuessTime && Date.now() - lastGuessTime < RATE_LIMIT_DELAY) {
+      dispatch(setRateLimit(Date.now() + RATE_LIMIT_DELAY));
+      return;
+    }
+
     setMessage('');
+    dispatch(setRateLimit(Date.now() + RATE_LIMIT_DELAY));
 
-    // Add guess to chat
-    dispatch(addMessage({
-      type: 'guess',
-      text: guess,
-      playerId: user.id,
-      playerName: profile.displayName || 'Anonymous'
-    }));
-
-    // Submit guess for validation
+    // Submit guess
     if (onGuessSubmit) {
       onGuessSubmit(guess);
     }
@@ -65,91 +65,154 @@ const ChatBox = ({ onGuessSubmit }) => {
   };
 
   const formatMessage = (msg) => {
-    if (msg.type === 'guess' && msg.isCorrect) {
-      return `${msg.playerName} guessed correctly! 🎉`;
+    switch (msg.type) {
+      case 'system':
+        return msg.text;
+      case 'system-close':
+        return msg.text;
+      case 'correct':
+        return `${msg.playerName} guessed correctly! 🎉`;
+      case 'guess':
+        return `${msg.playerName}: ${msg.text}`;
+      default:
+        return `${msg.playerName}: ${msg.text}`;
     }
-    if (msg.type === 'system') {
-      return msg.text;
-    }
-    return `${msg.playerName}: ${msg.text}`;
+  };
+
+  const getMessageClass = (msg) => {
+    const baseClass = 'message';
+    const typeClass = msg.type || 'guess';
+    const isOwnMessage = msg.playerId === user?.id ? 'own' : '';
+    
+    return `${baseClass} ${typeClass} ${isOwnMessage}`.trim();
+  };
+
+  const getTimeRemaining = () => {
+    if (!rateLimitedUntil) return 0;
+    return Math.max(0, Math.ceil((rateLimitedUntil - Date.now()) / 1000));
   };
 
   return (
     <div className="chat-box">
       <div className="chat-header">
-        <h3>Guesses</h3>
+        <h3>💬 Chat & Guesses</h3>
         {isDrawer && (
-          <span className="drawer-badge">You're drawing!</span>
+          <span className="drawer-badge">🎨 Drawing</span>
+        )}
+        {!canGuess && !isDrawer && (
+          <span className="guessed-badge">✅ Guessed!</span>
         )}
       </div>
 
       <div className="messages-container">
+        {messages.length === 0 && (
+          <div className="no-messages">
+            {isDrawer ? "Players' guesses will appear here..." : "Start guessing!"}
+          </div>
+        )}
+        
         {messages.map((msg) => (
           <div
-            key={msg.id}
-            className={`message ${msg.type} ${msg.isCorrect ? 'correct' : ''}`}
+            key={msg.id || msg.timestamp}
+            className={getMessageClass(msg)}
           >
-            {formatMessage(msg)}
+            <div className="message-content">
+              {formatMessage(msg)}
+            </div>
+            {msg.timestamp && (
+              <div className="message-time">
+                {new Date(msg.timestamp).toLocaleTimeString([], { 
+                  hour: '2-digit', 
+                  minute: '2-digit' 
+                })}
+              </div>
+            )}
           </div>
         ))}
         
         {reactions.map((reaction) => (
           <div key={reaction.id} className="reaction-message">
-            {reaction.playerName} reacted {reaction.emoji}
+            <span className="reaction-emoji">{reaction.emoji}</span>
+            <span className="reaction-player">{reaction.playerName}</span>
           </div>
         ))}
         
         <div ref={messagesEndRef} />
       </div>
 
-      {canGuess && (
+      {shouldShowInput && (
         <form onSubmit={handleSubmit} className="guess-form">
           <div className="input-container">
             <input
               type="text"
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              placeholder="Type your guess..."
+              placeholder={currentWord ? "Type your guess..." : "Waiting for word..."}
               className={`guess-input ${isGuessCorrect ? 'correct' : ''} ${isGuessClose ? 'close' : ''}`}
               maxLength={50}
-              disabled={isRateLimited}
+              disabled={isRateLimited || !currentWord}
+              autoComplete="off"
             />
             <span className="char-count">{message.length}/50</span>
           </div>
           
           {isGuessClose && (
             <div className="guess-feedback close">
-              You're close! Keep trying! 🔥
+              🔥 You're close! Keep trying!
             </div>
           )}
           
           {isRateLimited && (
             <div className="rate-limit-warning">
-              Please wait before sending another guess...
+              ⏱️ Wait {getTimeRemaining()}s before next guess...
             </div>
           )}
           
           <button
             type="submit"
-            disabled={!message.trim() || isRateLimited}
+            disabled={!message.trim() || isRateLimited || !currentWord}
             className="guess-submit"
           >
-            Guess
+            {isRateLimited ? `Wait ${getTimeRemaining()}s` : 'Guess'}
           </button>
         </form>
       )}
 
+      {!shouldShowInput && !isDrawer && (
+        <div className="guess-disabled">
+          {!canGuess ? "You've already guessed correctly! 🎉" : 
+           !isActive ? "Game not active" :
+           !currentWord ? "Waiting for word selection..." : 
+           "You can't guess right now"}
+        </div>
+      )}
+
       <div className="reaction-bar">
-        <span>React: </span>
+        <span className="reaction-label">Quick reactions: </span>
         {EMOJI_REACTIONS.map((emoji) => (
           <button
             key={emoji}
             onClick={() => handleReaction(emoji)}
             className="reaction-btn"
+            title={`React with ${emoji}`}
           >
             {emoji}
           </button>
         ))}
+      </div>
+
+      {/* Game status indicators */}
+      <div className="chat-status">
+        {isDrawer && (
+          <div className="status-message drawer">
+            🎨 You're drawing! Watch the guesses come in...
+          </div>
+        )}
+        {!isActive && (
+          <div className="status-message inactive">
+            ⏸️ Game is paused
+          </div>
+        )}
       </div>
     </div>
   );

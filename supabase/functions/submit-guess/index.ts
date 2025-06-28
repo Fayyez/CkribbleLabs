@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std/http/server.ts";
+import { corsHeaders } from "../__shared_data/cors.ts";
 
 // Levenshtein Distance Implementation with dynamic programming
 function levenshtein(a: string, b: string): number {
@@ -21,12 +22,21 @@ function levenshtein(a: string, b: string): number {
 }
 
 serve(async (req) => {
+  // Handle CORS preflight requests
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { 
+      status: 200,
+      headers: corsHeaders 
+    });
+  }
+
   try {
     const { guess, actualWord } = await req.json();
 
     if (!guess || !actualWord) {
       return new Response(JSON.stringify({ error: "Missing fields" }), {
         status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
@@ -39,11 +49,13 @@ serve(async (req) => {
 
     return new Response(JSON.stringify({ isCorrect, isClose, distance }), {
       status: 200,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   } catch (err) {
     console.error("submit-guess error:", err);
     return new Response(JSON.stringify({ error: "Internal Server Error" }), {
       status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   }
 });

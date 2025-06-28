@@ -1,8 +1,8 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { supabase, callEdgeFunction } from '../lib/supabase';
-import { addPlayer, removePlayer, updatePlayer, setRoom } from '../redux/slices/roomSlice';
+import { addPlayer, removePlayer, setRoom, setPlayers } from '../redux/slices/roomSlice';
 import { startGame } from '../redux/slices/gameSlice';
 
 const DEFAULT_AVATAR = process.env.SUPABASE_AVATAR_BUCKET_URL + 'default-pfp.jpg';
@@ -15,18 +15,37 @@ const WaitingRoom = () => {
   const { user, profile } = useSelector(state => state.auth);
   const { players, hostId, settings } = useSelector(state => state.room);
   
+  // Refs to prevent unnecessary rerenders and track state
+  const channelRef = useRef(null);
+  const hasJoinedRef = useRef(false);
+  const isJoiningRef = useRef(false);
+  const isInitializedRef = useRef(false);
+  const roomIdRef = useRef(roomId);
+  const playersRef = useRef(players); // Add ref for current players
+  
   // State declarations
   const [timeUntilAutoStart, setTimeUntilAutoStart] = useState(300);
   const [isStarting, setIsStarting] = useState(false);
-  const [isJoining, setIsJoining] = useState(false);
   const [showTeamSelection, setShowTeamSelection] = useState(false);
   const [selectedTeam, setSelectedTeam] = useState(null);
   const [copySuccess, setCopySuccess] = useState(false);
   const [error, setError] = useState(null);
-  const [channel, setChannel] = useState(null);
   const [autoStartActive, setAutoStartActive] = useState(false);
   const [roomLoading, setRoomLoading] = useState(false);
-  const [hasJoined, setHasJoined] = useState(false);
+
+  // Update refs when state changes
+  useEffect(() => {
+    playersRef.current = players;
+  }, [players]);
+
+  // Update room ID ref when it changes
+  useEffect(() => {
+    if (roomId !== roomIdRef.current) {
+      roomIdRef.current = roomId;
+      isInitializedRef.current = false;
+      hasJoinedRef.current = false;
+    }
+  }, [roomId]);
 
   // Computed values
   const isRoomCreator = user?.id === hostId && hostId !== null;
@@ -41,7 +60,7 @@ const WaitingRoom = () => {
   const team1Players = players.filter(p => p.team === settings.teamNames?.[0]);
   const team2Players = players.filter(p => p.team === settings.teamNames?.[1]);
 
-  // Logging functions (defined first)
+  // Stable logging functions to prevent infinite re-renders
   const logDebug = useCallback((message, data = null) => {
     console.log(`[WaitingRoom Debug] ${message}`, data);
   }, []);
@@ -74,15 +93,89 @@ const WaitingRoom = () => {
     }
   }, [roomId, logInfo, logError]);
 
-  // Core functions (defined before useEffect that uses them)
-  const handleStartGame = useCallback(async () => {
-    console.log('[WaitingRoom] handleStartGame called', {
-      isRoomCreator,
-      canStartManually,
-      canStartTeamed,
-      isStarting
-    });
+  // Central state management function - stable dependency array
+  const updateRoomState = useCallback(async (action = 'get-state', playerData = null) => {
+    const currentRoomId = roomIdRef.current;
+    if (!currentRoomId || !user?.id) return null;
+
+    try {
+      logInfo(`Updating room state: ${action}`, { roomId: currentRoomId, userId: user.id });
+
+      const response = await callEdgeFunction('join-room', {
+        roomId: currentRoomId,
+        playerId: user.id,
+        playerData,
+        action
+      });
+
+      if (response && response.success && response.room) {
+        // Batch Redux updates to prevent multiple rerenders
+        dispatch(setRoom({
+          roomId: response.room.roomId,
+          hostId: response.room.hostId,
+          settings: response.room.settings
+        }));
+
+        dispatch(setPlayers(response.room.players));
+
+        logInfo(`Room state updated: ${action}`, {
+          roomId: response.room.roomId,
+          hostId: response.room.hostId,
+          playersCount: response.room.players?.length || 0
+        });
+
+        return response.room;
+      } else {
+        logError('Failed to update room state', response);
+        return null;
+      }
+    } catch (error) {
+      logError('Error updating room state', error);
+      return null;
+    }
+  }, [user?.id, dispatch, logInfo, logError]); // Removed callEdgeFunction from deps
+
+  // Initialize room data - stable function
+  const initializeRoom = useCallback(async () => {
+    const currentRoomId = roomIdRef.current;
+    if (!currentRoomId || roomLoading || isInitializedRef.current) return;
     
+    try {
+      setRoomLoading(true);
+      isInitializedRef.current = true;
+      logInfo('Initializing room', { roomId: currentRoomId });
+
+      const room = await updateRoomState('get-state');
+      
+      if (!room) {
+        // Fallback settings
+        logInfo('Using fallback settings');
+        const fallbackSettings = {
+          rounds: 3,
+          drawingTime: 80,
+          maxWordLength: 15,
+          theme: 'default',
+          isThemedGame: false,
+          isTeamGame: false,
+          teamNames: ['Red', 'Blue'],
+        };
+
+        dispatch(setRoom({
+          roomId: currentRoomId,
+          hostId: null,
+          settings: fallbackSettings
+        }));
+      }
+    } catch (error) {
+      logError('Failed to initialize room', error);
+      isInitializedRef.current = false; // Reset on error
+    } finally {
+      setRoomLoading(false);
+    }
+  }, [updateRoomState, roomLoading, dispatch, logInfo, logError]);
+
+  // Handle start game
+  const handleStartGame = useCallback(async () => {
     if (!isRoomCreator || !canStartManually || !canStartTeamed || isStarting) {
       logDebug('Cannot start game', { isRoomCreator, canStartManually, canStartTeamed, isStarting });
       return;
@@ -100,19 +193,94 @@ const WaitingRoom = () => {
       });
 
       logInfo('Game start response', response);
+      logInfo('Debug - Current user ID:', user.id);
+      logInfo('Debug - Next drawer ID:', response.nextDrawer);
+      logInfo('Debug - Is current user the drawer?', user.id === response.nextDrawer);
+      logInfo('Debug - Word options:', response.wordOptions);
+      logInfo('Debug - Turn order:', response.gameState?.turnOrder);
+      logInfo('Debug - Full response object:', JSON.stringify(response, null, 2));
 
-      if (channel) {
-        await channel.send({
-          type: 'broadcast',
-          event: 'game:starting',
-          payload: response
-        });
+      if (!response.success) {
+        throw new Error(response.error || 'Failed to start game');
       }
 
-      dispatch(startGame(response));
+      // Create a dedicated channel for broadcasting game events
+      const gameChannel = supabase.channel(`room:${roomId}`);
+      
+      try {
+        // First broadcast the game start event
+        logInfo('Broadcasting game start event');
+        await gameChannel.send({
+          type: 'broadcast',
+          event: 'game:start',
+          payload: {
+            success: true,
+            round: response.round || 1,
+            nextDrawer: response.nextDrawer,
+            drawerId: response.nextDrawer,
+            gameState: response.gameState,
+            turnOrder: response.gameState?.turnOrder || players.map(p => p.id),
+            currentTurnIndex: 0,
+            message: response.message,
+            isActive: true,
+            currentRound: response.round || 1,
+            totalRounds: settings.rounds,
+            timeRemaining: settings.drawingTime
+          }
+        });
+
+        // Then broadcast the first round event with word options for the drawer
+        if (response.nextDrawer && response.wordOptions) {
+          logInfo('Broadcasting first round event with word options');
+          
+          // Capture values before setTimeout to prevent scope issues
+          const firstDrawerId = response.nextDrawer;
+          const firstRound = response.round || 1;
+          const firstWordOptions = [...response.wordOptions];
+          const firstTurnOrder = response.gameState?.turnOrder || players.map(p => p.id);
+          
+          setTimeout(async () => {
+            logInfo('Executing delayed round broadcast with drawerId:', firstDrawerId);
+            await gameChannel.send({
+              type: 'broadcast',
+              event: 'game:round',
+              payload: {
+                drawerId: firstDrawerId,
+                roundNumber: firstRound,
+                turnIndex: 0,
+                wordOptions: firstWordOptions,
+                timeRemaining: settings.drawingTime,
+                turnOrder: firstTurnOrder
+              }
+            });
+          }, 500); // Small delay to ensure game:start is processed first
+        }
+      } catch (broadcastError) {
+        logError('Failed to broadcast game events', broadcastError);
+        // Continue anyway - the game state is still valid
+      }
+
+      // Dispatch enhanced game start data
+      dispatch(startGame({
+        isActive: true,
+        currentRound: response.round || 1,
+        currentTurn: 1,
+        totalRounds: settings.rounds,
+        drawerId: response.nextDrawer,
+        wordOptions: response.wordOptions || [],
+        usedWords: [],
+        scores: response.gameState?.scores || {},
+        leaderboard: [],
+        turnOrder: response.gameState?.turnOrder || players.map(p => p.id),
+        gameStartTime: Date.now(),
+        timeRemaining: settings.drawingTime
+      }));
+
+      logInfo('Navigating to game page');
       navigate(`/room/${roomId}/game`);
     } catch (error) {
       logError('Error starting game', error);
+      setError(`Failed to start game: ${error.message}`);
       setIsStarting(false);
     }
   }, [
@@ -125,7 +293,6 @@ const WaitingRoom = () => {
     user?.id,
     players,
     settings,
-    channel,
     dispatch,
     navigate,
     logDebug,
@@ -133,8 +300,9 @@ const WaitingRoom = () => {
     logError
   ]);
 
+  // Handle team selection
   const handleTeamSelect = useCallback(async (team) => {
-    if (!channel || !user || !profile) {
+    if (!channelRef.current || !user || !profile) {
       logError('Cannot select team - missing data');
       return;
     }
@@ -142,6 +310,7 @@ const WaitingRoom = () => {
     try {
       logInfo('Selecting team', { userId: user.id, team });
       setSelectedTeam(team);
+      isJoiningRef.current = true;
 
       const playerData = {
         id: user.id,
@@ -149,48 +318,40 @@ const WaitingRoom = () => {
         avatarUrl: profile.avatarUrl || DEFAULT_AVATAR,
         team,
         joinedAt: new Date().toISOString(),
-        isCreator: user.id === hostId
+        isCreator: false
       };
 
-      dispatch(addPlayer(playerData));
-      
-      await channel.send({
-        type: 'broadcast',
-        event: 'player:join',
-        payload: { player: playerData }
-      });
+      const room = await updateRoomState('join', playerData);
 
-      setShowTeamSelection(false);
-      setHasJoined(true);
-      setIsJoining(false);
-      logInfo('Team selection complete', { team });
+      if (room) {
+        // Broadcast join event to other players
+        await channelRef.current.send({
+          type: 'broadcast',
+          event: 'player:join',
+          payload: playerData
+        });
+
+        setShowTeamSelection(false);
+        hasJoinedRef.current = true;
+        logInfo('Team selection complete', { team, totalPlayers: room.players.length });
+      } else {
+        throw new Error('Failed to join room with team selection');
+      }
     } catch (error) {
       logError('Error selecting team', error);
+    } finally {
+      isJoiningRef.current = false;
     }
-  }, [channel, user, profile, dispatch, hostId, logInfo, logError]);
+  }, [user, profile, updateRoomState, logInfo, logError]);
 
+  // Handle joining room
   const joinRoom = useCallback(async () => {
-    console.log('[WaitingRoom] joinRoom called', {
-      hasUser: !!user,
-      hasProfile: !!profile,
-      hasChannel: !!channel,
-      hasJoined,
-      isJoining
-    });
-    
-    if (!user || !profile || !channel || hasJoined || isJoining) {
-      logDebug('Cannot join room - conditions not met', { 
-        hasUser: !!user, 
-        hasProfile: !!profile, 
-        hasChannel: !!channel, 
-        hasJoined, 
-        isJoining 
-      });
+    if (!user || !profile || !channelRef.current || hasJoinedRef.current || isJoiningRef.current) {
       return;
     }
 
     try {
-      setIsJoining(true);
+      isJoiningRef.current = true;
       logInfo('Joining room', { userId: user.id, displayName: profile.displayName });
 
       const playerData = {
@@ -199,95 +360,50 @@ const WaitingRoom = () => {
         avatarUrl: profile.avatarUrl || DEFAULT_AVATAR,
         team: settings.isTeamGame ? null : null,
         joinedAt: new Date().toISOString(),
-        isCreator: user.id === hostId
+        isCreator: false
       };
 
       if (settings.isTeamGame && !selectedTeam) {
         logInfo('Team game - showing team selection');
         setShowTeamSelection(true);
-        setIsJoining(false);
         return;
       }
 
-      dispatch(addPlayer(playerData));
-      
-      await channel.send({
-        type: 'broadcast',
-        event: 'player:join',
-        payload: { player: playerData }
-      });
+      const room = await updateRoomState('join', playerData);
 
-      setHasJoined(true);
-      setIsJoining(false);
-      logInfo('Successfully joined room');
-    } catch (error) {
-      logError('Error joining room', error);
-      setIsJoining(false);
-    }
-  }, [
-    user,
-    profile,
-    channel,
-    settings.isTeamGame,
-    selectedTeam,
-    hasJoined,
-    isJoining,
-    dispatch,
-    hostId,
-    logDebug,
-    logInfo,
-    logError
-  ]);
+      if (room) {
+        // Broadcast join event to other players
+        await channelRef.current.send({
+          type: 'broadcast',
+          event: 'player:join',
+          payload: playerData
+        });
 
-  const fetchRoomData = useCallback(async () => {
-    if (!roomId) return;
-    if (hostId !== null && hostId !== undefined) return;
-
-    try {
-      setRoomLoading(true);
-      logInfo('Fetching room data', { roomId });
-
-      const response = await callEdgeFunction('join-room', {
-        roomId,
-        playerId: user?.id
-      });
-
-      if (response.success) {
-        const defaultSettings = {
-          rounds: 3,
-          drawingTime: 80,
-          maxWordLength: 15,
-          theme: 'default',
-          isThemedGame: false,
-          isTeamGame: false,
-          teamNames: ['Red', 'Blue'],
-        };
-
-        dispatch(setRoom({
-          roomId,
-          hostId: null,
-          settings: defaultSettings
-        }));
-
-        logInfo('Room data fetched successfully');
+        hasJoinedRef.current = true;
+        logInfo('Successfully joined room', { 
+          roomId, 
+          playerId: user.id, 
+          totalPlayers: room.players.length 
+        });
       } else {
-        throw new Error(response.error || 'Room validation failed');
+        throw new Error('Failed to join room - invalid response');
       }
     } catch (error) {
-      logError('Failed to fetch room data', error);
-      setError('Room not found. Redirecting...');
-      setTimeout(() => navigate('/'), 3000);
+      logError('Error joining room', error);
     } finally {
-      setRoomLoading(false);
+      isJoiningRef.current = false;
     }
-  }, [roomId, hostId, user?.id, dispatch, navigate, logInfo, logError]);
+  }, [user, profile, settings.isTeamGame, selectedTeam, roomId, updateRoomState, logInfo, logError]);
 
-  // Effects (now that all functions are defined)
+  // Initialize room on mount - only run once per roomId
   useEffect(() => {
     console.log('[WaitingRoom] Component mounted');
-    fetchRoomData();
-  }, [fetchRoomData]);
+    if (!isInitializedRef.current) {
+      initializeRoom();
+    }
+  }, []); // Empty dependency array - only run once on mount
 
+  // Auto-start timer effect
   useEffect(() => {
     if (!canAutoStart || !isRoomCreator) {
       setAutoStartActive(false);
@@ -313,6 +429,7 @@ const WaitingRoom = () => {
     return () => clearInterval(timer);
   }, [timeUntilAutoStart, canAutoStart, autoStartActive, isRoomCreator, handleStartGame, logInfo]);
 
+  // Channel setup effect - stable, doesn't recreate on players change
   useEffect(() => {
     if (!roomId || !user?.id) return;
 
@@ -323,67 +440,79 @@ const WaitingRoom = () => {
     });
     
     newChannel
-      .on('broadcast', { event: 'player:join' }, (payload) => {
-        logInfo('Player join broadcast received', payload);
+      .on('broadcast', { event: 'player:join' }, (data) => {
+        logInfo('Player join broadcast received', data);
         
-        if (!payload?.player) {
-          logError('Invalid player join payload', payload);
+        const payload = data.payload || data;
+        const playerData = payload.player || payload;
+        
+        if (!playerData || !playerData.id) {
+          logError('Invalid player join payload', { data, payload, playerData });
           return;
         }
         
         const player = {
-          id: payload.player.id,
-          displayName: payload.player.displayName || 'Anonymous',
-          avatarUrl: payload.player.avatarUrl || DEFAULT_AVATAR,
-          team: payload.player.team || null,
-          joinedAt: payload.player.joinedAt || new Date().toISOString(),
-          isCreator: payload.player.isCreator || false
+          id: playerData.id,
+          displayName: playerData.displayName || 'Anonymous',
+          avatarUrl: playerData.avatarUrl || DEFAULT_AVATAR,
+          team: playerData.team || null,
+          joinedAt: playerData.joinedAt || new Date().toISOString(),
+          isCreator: playerData.isCreator || false
         };
         
-        if (player.isCreator && !hostId) {
-          logInfo('Setting room creator', { playerId: player.id });
-          dispatch(setRoom({ roomId, hostId: player.id, settings }));
-        }
-        
-        const existingPlayer = players.find(p => p.id === player.id);
-        if (!existingPlayer) {
+        // Use ref to check current players without stale closure
+        const currentPlayers = playersRef.current;
+        if (!currentPlayers.some(p => p.id === player.id)) {
           dispatch(addPlayer(player));
+          logInfo('Added new player to room', { player, currentPlayerCount: currentPlayers.length });
+        } else {
+          logInfo('Player already exists, skipping duplicate', { playerId: player.id });
         }
       })
       .on('broadcast', { event: 'player:leave' }, (payload) => {
         if (payload?.playerId) {
           dispatch(removePlayer(payload.playerId));
+          logInfo('Player left room', { playerId: payload.playerId });
         }
       })
       .on('broadcast', { event: 'game:starting' }, (payload) => {
-        logInfo('Game starting notification', payload);
+        logInfo('Game starting notification received', payload);
+        navigate(`/room/${roomId}/game`);
+      })
+      .on('broadcast', { event: 'game:start' }, (payload) => {
+        logInfo('Game start event received in WaitingRoom', payload);
+        // Redirect all players to the game page when game starts
         navigate(`/room/${roomId}/game`);
       })
       .subscribe((status) => {
         logInfo('Channel status', status);
         if (status === 'SUBSCRIBED') {
-          setChannel(newChannel);
+          channelRef.current = newChannel;
+          // Auto-join when channel is ready
+          if (user && profile && !hasJoinedRef.current) {
+            setTimeout(() => joinRoom(), 500);
+          }
+        } else if (status === 'CHANNEL_ERROR') {
+          logError('Channel error occurred', status);
+        } else if (status === 'CLOSED') {
+          logInfo('Channel closed', status);
+          channelRef.current = null;
         }
       });
 
     return () => {
-      if (newChannel && hasJoined) {
+      logInfo('Cleaning up channel');
+      if (newChannel && user?.id) {
         newChannel.send({
           type: 'broadcast',
           event: 'player:leave',
           payload: { playerId: user.id }
-        }).catch(console.error);
+        }).catch(err => logError('Error sending leave notification', err));
+        supabase.removeChannel(newChannel);
       }
-      supabase.removeChannel(newChannel);
+      channelRef.current = null;
     };
-  }, [roomId, user?.id, hasJoined, players, dispatch, navigate, hostId, settings, logInfo, logError]);
-
-  useEffect(() => {
-    if (channel && !hasJoined && !isJoining && user && profile) {
-      logInfo('Auto-joining room');
-      joinRoom();
-    }
-  }, [channel, hasJoined, isJoining, user, profile, joinRoom, logInfo]);
+  }, [roomId, user?.id, user, profile, dispatch, navigate, joinRoom, logInfo, logError]); // Removed players-dependent handlers
 
   // Render logic
   if (roomLoading) {
@@ -424,6 +553,7 @@ const WaitingRoom = () => {
                 key={team}
                 onClick={() => handleTeamSelect(team)}
                 className={`team-btn ${index === 0 ? 'team-red' : 'team-blue'}`}
+                disabled={isJoiningRef.current}
               >
                 Join Team {team}
                 <div className="team-count">
@@ -485,26 +615,9 @@ const WaitingRoom = () => {
           </div>
         </div>
 
-        <div className="start-requirements">
-          <h3>Ready to Start?</h3>
-          <div className="requirements-list">
-            <div className={`requirement ${canStartManually ? 'met' : 'unmet'}`}>
-              <div className="indicator"></div>
-              <span>Minimum 2 players ({playerCount}/2)</span>
-            </div>
-            {settings.isTeamGame && (
-              <>
-                <div className={`requirement ${team1Players.length >= 1 ? 'met' : 'unmet'}`}>
-                  <div className="indicator"></div>
-                  <span>Team {settings.teamNames?.[0]} has players ({team1Players.length})</span>
-                </div>
-                <div className={`requirement ${team2Players.length >= 1 ? 'met' : 'unmet'}`}>
-                  <div className="indicator"></div>
-                  <span>Team {settings.teamNames?.[1]} has players ({team2Players.length})</span>
-                </div>
-              </>
-            )}
-          </div>
+        <div className="game-status">
+          <span className="status-text">Ready</span>
+          <span className={`status-indicator ${canStartManually && canStartTeamed ? 'ready' : 'not-ready'}`}>●</span>
         </div>
 
         <div className="team-players">
@@ -610,7 +723,7 @@ const WaitingRoom = () => {
             </div>
           )}
 
-          {isJoining && (
+          {isJoiningRef.current && (
             <div className="joining-status">
               🔄 Joining room...
             </div>

@@ -1,10 +1,10 @@
-
 import { createSlice } from '@reduxjs/toolkit';
 
 const initialState = {
   isActive: false,
   currentRound: 1,
   currentTurn: 1,
+  currentTurnIndex: 0,
   totalRounds: 3,
   drawerId: null,
   currentWord: null,
@@ -28,25 +28,57 @@ const gameSlice = createSlice({
   initialState,
   reducers: {
     startGame: (state, action) => {
-      const { round, nextDrawer, wordOptions, turnOrder } = action.payload;
+      console.log('🎮 Redux startGame action payload:', action.payload);
+      const { round, nextDrawer, drawerId, wordOptions, turnOrder, gameState } = action.payload;
+      console.log('🎮 Setting drawerId to:', nextDrawer || drawerId);
+      
       state.isActive = true;
       state.currentRound = round || 1;
       state.currentTurn = 1;
-      state.drawerId = nextDrawer;
+      state.currentTurnIndex = 0;
+      state.drawerId = nextDrawer || drawerId; // Use either field
       state.wordOptions = wordOptions || [];
       state.turnOrder = turnOrder || [];
       state.gameStartTime = Date.now();
       state.isGameOver = false;
+      
+      // If we have full game state, use it
+      if (gameState) {
+        state.totalRounds = gameState.totalRounds || 3;
+        state.scores = gameState.scores || {};
+      }
+      
+      console.log('🎮 Redux state after startGame:', {
+        isActive: state.isActive,
+        drawerId: state.drawerId,
+        currentRound: state.currentRound,
+        turnOrder: state.turnOrder,
+        wordOptions: state.wordOptions.length
+      });
     },
     startRound: (state, action) => {
-      const { round, drawerId, wordLength, drawingTime } = action.payload;
-      state.currentRound = round;
+      console.log('🎯 Redux startRound action payload:', action.payload);
+      const { round, roundNumber, drawerId, wordLength, drawingTime, turnIndex, wordOptions } = action.payload;
+      console.log('🎯 Setting drawerId to:', drawerId);
+      
+      state.currentRound = round || roundNumber;
       state.drawerId = drawerId;
       state.wordLength = wordLength;
       state.timeRemaining = drawingTime || 60;
       state.roundStartTime = Date.now();
       state.currentWord = null;
-      state.wordOptions = [];
+      state.wordOptions = wordOptions || [];
+      
+      if (turnIndex !== undefined) {
+        state.currentTurnIndex = turnIndex;
+      }
+      
+      console.log('🎯 Redux state after startRound:', {
+        currentRound: state.currentRound,
+        drawerId: state.drawerId,
+        wordOptions: state.wordOptions.length,
+        currentTurnIndex: state.currentTurnIndex
+      });
     },
     selectWord: (state, action) => {
       state.currentWord = action.payload;
@@ -65,17 +97,22 @@ const gameSlice = createSlice({
         .sort((a, b) => b.score - a.score);
     },
     endRound: (state, action) => {
-      const { nextDrawer, nextRound, gameOver, scores } = action.payload;
+      const { nextDrawer, nextRound, nextTurnIndex, isGameOver, scores } = action.payload;
+      
       if (scores) {
         state.scores = { ...state.scores, ...scores };
+        state.leaderboard = Object.entries(state.scores)
+          .map(([playerId, score]) => ({ playerId, score }))
+          .sort((a, b) => b.score - a.score);
       }
       
-      if (gameOver) {
+      if (isGameOver) {
         state.isGameOver = true;
         state.isActive = false;
       } else {
         state.drawerId = nextDrawer;
         state.currentRound = nextRound || state.currentRound;
+        state.currentTurnIndex = nextTurnIndex !== undefined ? nextTurnIndex : state.currentTurnIndex;
         state.currentTurn += 1;
       }
     },
@@ -94,8 +131,21 @@ const gameSlice = createSlice({
     },
     nextTurn: (state) => {
       state.currentTurn += 1;
-      const nextDrawerIndex = (state.currentTurn - 1) % state.turnOrder.length;
-      state.drawerId = state.turnOrder[nextDrawerIndex];
+      state.currentTurnIndex = (state.currentTurnIndex + 1) % state.turnOrder.length;
+      if (state.turnOrder.length > 0) {
+        state.drawerId = state.turnOrder[state.currentTurnIndex];
+      }
+      
+      // Check if we've completed a full round
+      if (state.currentTurnIndex === 0 && state.currentTurn > 1) {
+        state.currentRound += 1;
+      }
+    },
+    setCurrentTurnIndex: (state, action) => {
+      state.currentTurnIndex = action.payload;
+      if (state.turnOrder.length > 0) {
+        state.drawerId = state.turnOrder[state.currentTurnIndex];
+      }
     },
     resetGame: (state) => {
       return { ...initialState, totalRounds: state.totalRounds };
@@ -121,6 +171,7 @@ export const {
   endGame,
   setTurnOrder,
   nextTurn,
+  setCurrentTurnIndex,
   resetGame,
   setLoading,
   setError,
