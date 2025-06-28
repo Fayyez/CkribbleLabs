@@ -381,38 +381,6 @@ const GamePage = () => {
     };
   }, [roomId, user?.id, dispatch, players, settings, turnOrder]);
 
-  // Timer synchronization for drawer
-  useEffect(() => {
-    if (!isDrawer || !isActive || !currentWord) return;
-
-    const timerInterval = setInterval(() => {
-      dispatch((dispatch, getState) => {
-        const currentTime = getState().game.timeRemaining;
-        const newTime = currentTime - 1;
-        
-        dispatch(updateTimer(newTime));
-        
-        // Broadcast timer update to other players
-        const channel = supabase.channel(`room:${roomId}`);
-        channel.send({
-          type: 'broadcast',
-          event: 'timer:update',
-          payload: {
-            timeRemaining: newTime
-          }
-        });
-        
-        // Auto-end round when time runs out
-        if (newTime <= 0) {
-          console.log('⏰ Timer reached 0, ending round');
-          handleTimeUp();
-        }
-      });
-    }, 1000);
-
-    return () => clearInterval(timerInterval);
-  }, [isDrawer, isActive, currentWord, roomId, handleTimeUp]);
-
   // Handle time up
   const handleTimeUp = useCallback(async () => {
     if (!isDrawer) return;
@@ -451,6 +419,38 @@ const GamePage = () => {
       console.error('❌ Failed to end round on timeout:', error);
     }
   }, [isDrawer, roomId, currentWord, correctGuesses, calculatePoints, drawerId, currentRound, totalRounds, turnOrder, currentTurnIndex, players]);
+
+  // Timer synchronization for drawer
+  useEffect(() => {
+    if (!isDrawer || !isActive || !currentWord) return;
+
+    const timerInterval = setInterval(() => {
+      dispatch((dispatch, getState) => {
+        const currentTime = getState().game.timeRemaining;
+        const newTime = currentTime - 1;
+        
+        dispatch(updateTimer(newTime));
+        
+        // Broadcast timer update to other players
+        const channel = supabase.channel(`room:${roomId}`);
+        channel.send({
+          type: 'broadcast',
+          event: 'timer:update',
+          payload: {
+            timeRemaining: newTime
+          }
+        });
+        
+        // Auto-end round when time runs out
+        if (newTime <= 0) {
+          console.log('⏰ Timer reached 0, ending round');
+          handleTimeUp();
+        }
+      });
+    }, 1000);
+
+    return () => clearInterval(timerInterval);
+  }, [isDrawer, isActive, currentWord, roomId, handleTimeUp]);
 
   // Handle canvas path updates
   const handlePathUpdate = useCallback((path) => {
