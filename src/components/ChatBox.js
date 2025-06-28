@@ -20,7 +20,7 @@ const ChatBox = ({ onGuessSubmit }) => {
     rateLimitedUntil
   } = useSelector(state => state.chat);
   
-  const { user } = useSelector(state => state.auth);
+  const { user, profile } = useSelector(state => state.auth);
   const { drawerId, isActive } = useSelector(state => state.game);
 
   const scrollToBottom = () => {
@@ -47,7 +47,7 @@ const ChatBox = ({ onGuessSubmit }) => {
       type: 'guess',
       text: guess,
       playerId: user.id,
-      playerName: user.displayName || 'Anonymous'
+      playerName: profile.displayName || 'Anonymous'
     }));
 
     // Submit guess for validation
@@ -60,7 +60,7 @@ const ChatBox = ({ onGuessSubmit }) => {
     dispatch(addReaction({
       emoji,
       playerId: user.id,
-      playerName: user.displayName || 'Anonymous'
+      playerName: profile.displayName || 'Anonymous'
     }));
   };
 

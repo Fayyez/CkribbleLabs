@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std/http/server.ts";
+import { corsHeaders } from "../__shared_data/cors.ts";
 
 type Player = { id: string; team?: string };
 
@@ -16,11 +17,19 @@ type RequestBody = {
 };
 
 serve(async (req) => {
+  // Handle CORS preflight requests
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders });
+  }
+
   try {
     const { roomId, hostId, players, settings }: RequestBody = await req.json();
 
     if (players.length < 2) {
-      return new Response(JSON.stringify({ error: "Minimum 2 players required." }), { status: 400 });
+      return new Response(JSON.stringify({ error: "Minimum 2 players required." }), { 
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
     }
 
     if (settings.isTeamGame) {
@@ -30,7 +39,10 @@ serve(async (req) => {
       const t2Count = players.filter(p => p.team === team2).length;
 
       if (!t1Count || !t2Count) {
-        return new Response(JSON.stringify({ error: "Each team must have at least one player." }), { status: 400 });
+        return new Response(JSON.stringify({ error: "Each team must have at least one player." }), { 
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
       }
     }
 
@@ -58,12 +70,18 @@ serve(async (req) => {
       round: 1,
       nextDrawer: drawer.id,
       wordOptions: words
-    }), { status: 200 });
+    }), { 
+      status: 200,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
   } catch (err) {
     console.error("start-game error:", err);
     return new Response(
       JSON.stringify({ error: "Internal Server Error" }),
-      { status: 500 }
+      { 
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      }
     );
   }
 });

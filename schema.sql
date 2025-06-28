@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS public.users (
     id UUID PRIMARY KEY,
     display_name TEXT,
     avatar_url TEXT,
+    email TEXT UNIQUE,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 

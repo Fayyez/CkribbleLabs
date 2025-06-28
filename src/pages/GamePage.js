@@ -9,10 +9,10 @@ import ChatBox from '../components/ChatBox';
 import Leaderboard from '../components/Leaderboard';
 import WordSelection from '../components/WordSelection';
 import GameTimer from '../components/GameTimer';
-import { 
-  startGame, 
-  startRound, 
-  endRound, 
+import {
+  startGame,
+  startRound,
+  endRound,
   endGame,
   updateTimer,
   updateScores,
@@ -26,7 +26,7 @@ const GamePage = () => {
   const navigate = useNavigate();
   const dispatch = useDispatch();
   
-  const { user } = useSelector(state => state.auth);
+  const { user, profile } = useSelector(state => state.auth);
   const { players, settings } = useSelector(state => state.room);
   const { 
     isActive, 
@@ -130,7 +130,7 @@ const GamePage = () => {
           event: 'chat:correct',
           payload: {
             playerId: user.id,
-            playerName: user.displayName || 'Anonymous',
+            playerName: profile.displayName || 'Anonymous',
             timeTaken: 60 - timeRemaining
           }
         });
@@ -146,7 +146,7 @@ const GamePage = () => {
             type: 'guess',
             text: guess,
             playerId: user.id,
-            playerName: user.displayName || 'Anonymous',
+            playerName: profile.displayName || 'Anonymous',
             isClose: result.isClose
           }
         });
@@ -154,7 +154,7 @@ const GamePage = () => {
     } catch (error) {
       console.error('Error submitting guess:', error);
     }
-  }, [currentWord, isDrawer, roomId, user?.id, user?.displayName, timeRemaining, dispatch]);
+  }, [currentWord, isDrawer, roomId, user?.id, profile?.displayName, timeRemaining, dispatch]);
 
   // Handle word selection
   const handleWordSelect = useCallback(async (selectedWord) => {
