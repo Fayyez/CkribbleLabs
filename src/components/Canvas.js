@@ -74,21 +74,24 @@ const Canvas = ({ onPathUpdate, onCanvasClear }) => {
 
   // Touch events for mobile
   const handleTouchStart = useCallback((e) => {
+    if (!canDraw || !currentWord) return;
     e.preventDefault();
     const touch = e.touches[0];
     handleMouseDown({ clientX: touch.clientX, clientY: touch.clientY });
-  }, [handleMouseDown]);
+  }, [canDraw, currentWord, handleMouseDown]);
 
   const handleTouchMove = useCallback((e) => {
+    if (!canDraw || !isDrawing || !currentWord) return;
     e.preventDefault();
     const touch = e.touches[0];
     handleMouseMove({ clientX: touch.clientX, clientY: touch.clientY });
-  }, [handleMouseMove]);
+  }, [canDraw, isDrawing, currentWord, handleMouseMove]);
 
   const handleTouchEnd = useCallback((e) => {
+    if (!canDraw || !isDrawing || !currentWord) return;
     e.preventDefault();
     handleMouseUp();
-  }, [handleMouseUp]);
+  }, [canDraw, isDrawing, currentWord, handleMouseUp]);
 
   // Optimized drawing function
   const draw = useCallback(() => {
@@ -188,6 +191,27 @@ const Canvas = ({ onPathUpdate, onCanvasClear }) => {
     return () => window.removeEventListener('resize', handleResize);
   }, [draw]);
 
+  // Setup touch event listeners with proper options
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // Add touch event listeners with passive: false to allow preventDefault
+    const touchStartHandler = (e) => handleTouchStart(e);
+    const touchMoveHandler = (e) => handleTouchMove(e);
+    const touchEndHandler = (e) => handleTouchEnd(e);
+
+    canvas.addEventListener('touchstart', touchStartHandler, { passive: false });
+    canvas.addEventListener('touchmove', touchMoveHandler, { passive: false });
+    canvas.addEventListener('touchend', touchEndHandler, { passive: false });
+
+    return () => {
+      canvas.removeEventListener('touchstart', touchStartHandler);
+      canvas.removeEventListener('touchmove', touchMoveHandler);
+      canvas.removeEventListener('touchend', touchEndHandler);
+    };
+  }, [handleTouchStart, handleTouchMove, handleTouchEnd]);
+
   // Connection status indicator
   useEffect(() => {
     const checkConnection = () => {
@@ -228,9 +252,6 @@ const Canvas = ({ onPathUpdate, onCanvasClear }) => {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
         style={{
           cursor: getCursorStyle()
         }}

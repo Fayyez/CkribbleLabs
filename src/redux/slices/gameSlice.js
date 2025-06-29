@@ -21,6 +21,11 @@ const initialState = {
   teamScores: {},
   loading: false,
   error: null,
+  // Add progress tracking
+  turnsInCurrentRound: 0,
+  turnsPerRound: 0,
+  completedTurns: 0,
+  totalTurns: 0,
 };
 
 const gameSlice = createSlice({
@@ -29,55 +34,62 @@ const gameSlice = createSlice({
   reducers: {
     startGame: (state, action) => {
       console.log('🎮 Redux startGame action payload:', action.payload);
-      const { round, nextDrawer, drawerId, wordOptions, turnOrder, gameState } = action.payload;
-      console.log('🎮 Setting drawerId to:', nextDrawer || drawerId);
+      const { 
+        turnOrder, 
+        currentRound, 
+        totalRounds, 
+        drawerId, 
+        gameStartTime, 
+        isActive = true, 
+        settings,
+        ...rest 
+      } = action.payload;
       
-      // CRITICAL: Completely reset game state to prevent corruption
-      state.isActive = true;
-      state.isGameOver = false; // Explicitly reset game over state
-      state.currentRound = round || 1;
-      state.currentTurn = 1;
+      // Set basic game state
+      state.isActive = isActive;
+      state.currentRound = currentRound || 1;
+      state.totalRounds = totalRounds || settings?.rounds || 3; // Ensure totalRounds is set properly
+      state.drawerId = drawerId;
+      state.gameStartTime = gameStartTime || Date.now();
+      state.isGameOver = false;
       state.currentTurnIndex = 0;
-      state.drawerId = nextDrawer || drawerId; // Use either field
-      state.wordOptions = wordOptions || [];
-      state.turnOrder = turnOrder || [];
-      state.gameStartTime = Date.now();
-      state.winner = null; // Reset winner
-      state.currentWord = null; // Reset current word
-      state.wordLength = 0; // Reset word length
-      state.timeRemaining = 60; // Reset timer
-      state.error = null; // Clear any errors
       
-      // If we have full game state, use it
-      if (gameState) {
-        state.totalRounds = gameState.totalRounds || gameState.settings?.rounds || 3;
-        state.scores = gameState.scores || {};
-        state.timeRemaining = gameState.settings?.drawingTime || 60;
+      // Set turn order and calculate turns per round
+      if (turnOrder && Array.isArray(turnOrder) && turnOrder.length > 0) {
+        state.turnOrder = turnOrder;
+        state.turnsPerRound = turnOrder.length;
+        state.totalTurns = state.turnsPerRound * state.totalRounds;
+        state.turnsInCurrentRound = 1;
+        state.completedTurns = 0;
       }
       
-      // Also check for settings in the payload directly
-      if (action.payload.settings) {
-        state.totalRounds = action.payload.settings.rounds || state.totalRounds;
-        state.timeRemaining = action.payload.settings.drawingTime || state.timeRemaining;
-      }
+      // Apply any other payload properties
+      Object.keys(rest).forEach(key => {
+        if (rest[key] !== undefined && initialState.hasOwnProperty(key)) {
+          state[key] = rest[key];
+        }
+      });
       
-      console.log('🎮 Redux state after startGame (full reset):', {
+      console.log('🎮 Redux state after startGame:', {
         isActive: state.isActive,
-        isGameOver: state.isGameOver,
-        drawerId: state.drawerId,
         currentRound: state.currentRound,
+        totalRounds: state.totalRounds,
+        drawerId: state.drawerId,
         turnOrder: state.turnOrder,
-        wordOptions: state.wordOptions.length,
-        currentWord: state.currentWord,
-        timeRemaining: state.timeRemaining
+        turnsPerRound: state.turnsPerRound,
+        totalTurns: state.totalTurns
       });
     },
     startRound: (state, action) => {
       console.log('🎯 Redux startRound action payload:', action.payload);
-      const { round, roundNumber, drawerId, wordLength, drawingTime, turnIndex, wordOptions } = action.payload;
+      const { round, roundNumber, drawerId, wordLength, drawingTime, turnIndex, wordOptions, isNewRound } = action.payload;
       console.log('🎯 Setting drawerId to:', drawerId, 'wordLength:', wordLength);
       
-      state.currentRound = round || roundNumber;
+      // Only update round if it's actually a new round
+      if (isNewRound || round || roundNumber) {
+        state.currentRound = round || roundNumber || state.currentRound;
+      }
+      
       state.drawerId = drawerId;
       state.wordLength = wordLength || 0;
       state.timeRemaining = drawingTime || state.timeRemaining || 60;
@@ -87,6 +99,22 @@ const gameSlice = createSlice({
       
       if (turnIndex !== undefined) {
         state.currentTurnIndex = turnIndex;
+        
+        // Ensure turnsPerRound is set properly
+        if (!state.turnsPerRound && state.turnOrder.length > 0) {
+          state.turnsPerRound = state.turnOrder.length;
+          state.totalTurns = state.turnsPerRound * state.totalRounds;
+        }
+        
+        // Update progress tracking with proper validation
+        if (state.turnsPerRound > 0) {
+          state.turnsInCurrentRound = (turnIndex % state.turnsPerRound) + 1;
+          state.completedTurns = (state.currentRound - 1) * state.turnsPerRound + state.turnsInCurrentRound;
+        } else {
+          // Fallback calculation
+          state.turnsInCurrentRound = turnIndex + 1;
+          state.completedTurns = (state.currentRound - 1) * state.turnOrder.length + state.turnsInCurrentRound;
+        }
       }
       
       console.log('🎯 Redux state after startRound:', {
@@ -95,7 +123,10 @@ const gameSlice = createSlice({
         wordLength: state.wordLength,
         wordOptions: state.wordOptions.length,
         currentTurnIndex: state.currentTurnIndex,
-        timeRemaining: state.timeRemaining
+        timeRemaining: state.timeRemaining,
+        turnsInCurrentRound: state.turnsInCurrentRound,
+        completedTurns: state.completedTurns,
+        turnsPerRound: state.turnsPerRound
       });
     },
     selectWord: (state, action) => {
@@ -124,13 +155,54 @@ const gameSlice = createSlice({
       state.timeRemaining = action.payload;
     },
     updateScores: (state, action) => {
-      state.scores = { ...state.scores, ...action.payload };
+      // Enhanced score update with validation and logging
+      const newScores = action.payload;
+      
+      // Validate that payload contains valid scores
+      if (!newScores || typeof newScores !== 'object') {
+        console.warn('⚠️ Invalid scores payload received:', newScores);
+        return;
+      }
+      
+      // Validate individual scores
+      const validatedScores = {};
+      Object.entries(newScores).forEach(([playerId, score]) => {
+        if (typeof score === 'number' && !isNaN(score) && score >= 0) {
+          validatedScores[playerId] = score;
+        } else {
+          console.warn('⚠️ Invalid score for player', playerId, ':', score);
+        }
+      });
+      
+      console.log('📊 Updating scores:', validatedScores);
+      
+      state.scores = { ...state.scores, ...validatedScores };
       state.leaderboard = Object.entries(state.scores)
         .map(([playerId, score]) => ({ playerId, score }))
         .sort((a, b) => b.score - a.score);
+        
+      console.log('📊 Updated leaderboard:', state.leaderboard);
     },
     endRound: (state, action) => {
-      const { nextDrawer, nextRound, nextTurnIndex, isGameOver, scores } = action.payload;
+      const { 
+        nextDrawer, 
+        nextRound, 
+        nextTurnIndex, 
+        isGameOver, 
+        scores, 
+        isNewRound,
+        gameProgress 
+      } = action.payload;
+      
+      console.log('🏁 Redux endRound:', {
+        nextDrawer,
+        nextRound,
+        nextTurnIndex,
+        isGameOver,
+        isNewRound,
+        gameProgress,
+        currentTurnsPerRound: state.turnsPerRound
+      });
       
       if (scores) {
         state.scores = { ...state.scores, ...scores };
@@ -142,11 +214,63 @@ const gameSlice = createSlice({
       if (isGameOver) {
         state.isGameOver = true;
         state.isActive = false;
+        console.log('🎉 Game marked as over');
       } else {
+        // Update for next turn/round
         state.drawerId = nextDrawer;
-        state.currentRound = nextRound || state.currentRound;
-        state.currentTurnIndex = nextTurnIndex !== undefined ? nextTurnIndex : state.currentTurnIndex;
-        state.currentTurn += 1;
+        if (nextRound !== undefined) {
+          state.currentRound = nextRound;
+        }
+        if (nextTurnIndex !== undefined) {
+          state.currentTurnIndex = nextTurnIndex;
+          
+          // Ensure turnsPerRound is set properly
+          if (!state.turnsPerRound && state.turnOrder.length > 0) {
+            state.turnsPerRound = state.turnOrder.length;
+            state.totalTurns = state.turnsPerRound * state.totalRounds;
+          }
+          
+          // Update progress tracking with proper validation
+          if (state.turnsPerRound > 0) {
+            state.turnsInCurrentRound = (nextTurnIndex % state.turnsPerRound) + 1;
+            state.completedTurns = (state.currentRound - 1) * state.turnsPerRound + state.turnsInCurrentRound;
+          } else {
+            // Fallback calculation
+            state.turnsInCurrentRound = nextTurnIndex + 1;
+            state.completedTurns = (state.currentRound - 1) * state.turnOrder.length + state.turnsInCurrentRound;
+          }
+        }
+        
+        // Clear current word and options for next turn
+        state.currentWord = null;
+        state.wordOptions = [];
+        state.wordLength = 0;
+        
+        console.log('🔄 Updated for next turn:', {
+          currentRound: state.currentRound,
+          currentTurnIndex: state.currentTurnIndex,
+          drawerId: state.drawerId,
+          turnsInCurrentRound: state.turnsInCurrentRound,
+          completedTurns: state.completedTurns,
+          turnsPerRound: state.turnsPerRound,
+          isNewRound
+        });
+      }
+      
+      // Update progress from backend if available (with validation)
+      if (gameProgress) {
+        if (gameProgress.completedTurns !== undefined && !isNaN(gameProgress.completedTurns)) {
+          state.completedTurns = gameProgress.completedTurns;
+        }
+        if (gameProgress.totalTurns !== undefined && !isNaN(gameProgress.totalTurns)) {
+          state.totalTurns = gameProgress.totalTurns;
+        }
+        if (gameProgress.turnsInCurrentRound !== undefined && !isNaN(gameProgress.turnsInCurrentRound)) {
+          state.turnsInCurrentRound = gameProgress.turnsInCurrentRound;
+        }
+        if (gameProgress.turnsPerRound !== undefined && !isNaN(gameProgress.turnsPerRound)) {
+          state.turnsPerRound = gameProgress.turnsPerRound;
+        }
       }
     },
     endGame: (state, action) => {
@@ -158,9 +282,12 @@ const gameSlice = createSlice({
       if (finalScores) {
         state.scores = finalScores;
       }
+      console.log('🎉 Game ended, winner:', winner);
     },
     setTurnOrder: (state, action) => {
       state.turnOrder = action.payload;
+      state.turnsPerRound = action.payload.length;
+      state.totalTurns = state.turnsPerRound * state.totalRounds;
     },
     nextTurn: (state) => {
       state.currentTurn += 1;
@@ -169,15 +296,23 @@ const gameSlice = createSlice({
         state.drawerId = state.turnOrder[state.currentTurnIndex];
       }
       
+      // Update progress tracking
+      state.turnsInCurrentRound = (state.currentTurnIndex % state.turnsPerRound) + 1;
+      state.completedTurns += 1;
+      
       // Check if we've completed a full round
       if (state.currentTurnIndex === 0 && state.currentTurn > 1) {
         state.currentRound += 1;
+        console.log('🔄 New round started:', state.currentRound);
       }
     },
     setCurrentTurnIndex: (state, action) => {
       state.currentTurnIndex = action.payload;
       if (state.turnOrder.length > 0) {
         state.drawerId = state.turnOrder[state.currentTurnIndex];
+        // Update progress tracking
+        state.turnsInCurrentRound = (state.currentTurnIndex % state.turnsPerRound) + 1;
+        state.completedTurns = (state.currentRound - 1) * state.turnsPerRound + state.turnsInCurrentRound;
       }
     },
     resetGame: (state) => {

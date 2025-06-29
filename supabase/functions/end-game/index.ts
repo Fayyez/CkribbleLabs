@@ -1,114 +1,116 @@
-// sample input
-type EndGameRequest = {
+import { serve } from "https://deno.land/std/http/server.ts";
+import { corsHeaders } from "../__shared_data/cors.ts";
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.0';
+
+type RequestBody = {
   roomId: string;
-  leaderboard: Record<string, number>; // { userId: score }
-  isTeamGame: boolean;
-  teamMap?: Record<string, string>; // { userId: "Red" }
+  winner?: string;
+  finalScores: Record<string, number>;
+  reason: 'completed' | 'insufficient_players' | 'host_ended';
+  gameStats?: {
+    totalRounds: number;
+    totalTurns: number;
+    gameDuration: number;
+    playerCount: number;
+  };
 };
 
-// function:
+// Initialize Supabase client
+const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-const maxScore = Math.max(...Object.values(leaderboard));
-const winners = Object.entries(leaderboard)
-  .filter(([_, score]) => score === maxScore)
-  .map(([userId]) => userId);
+// Clean up room and related data
+async function cleanupGameRoom(roomId: string) {
+  try {
+    console.log(`Cleaning up game room: ${roomId}`);
+    
+    // Delete the room from database
+    const { error } = await supabase
+      .from('rooms')
+      .delete()
+      .eq('room_id', roomId);
 
-const teamScores: Record<string, { total: number; count: number }> = {};
-for (const [userId, score] of Object.entries(leaderboard)) {
-  const team = teamMap[userId];
-  if (!team) continue;
-  if (!teamScores[team]) teamScores[team] = { total: 0, count: 0 };
-  teamScores[team].total += score;
-  teamScores[team].count++;
+    if (error) {
+      console.error('Error deleting room:', error);
+      throw error;
+    }
+    
+    console.log(`Successfully cleaned up room: ${roomId}`);
+  } catch (error) {
+    console.error('Failed to cleanup room:', error);
+    throw error;
+  }
 }
 
-const teamAverages = Object.fromEntries(
-  Object.entries(teamScores).map(([team, { total, count }]) => [
-    team,
-    total / count,
-  ])
-);
-
-const winningTeam = Object.entries(teamAverages).sort(
-  (a, b) => b[1] - a[1]
-)[0]?.[0];
-
-import { serve } from "https://deno.land/std/http/server.ts";
-
-type Leaderboard = Record<string, number>;
-type TeamMap = Record<string, string>;
-
 serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", {
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-        "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-      },
+  // Handle CORS preflight requests
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { 
+      status: 200,
+      headers: corsHeaders 
     });
   }
 
   try {
-    const { roomId, leaderboard, isTeamGame, teamMap } = await req.json();
+    const {
+      roomId,
+      winner,
+      finalScores,
+      reason,
+      gameStats
+    }: RequestBody = await req.json();
 
-    if (!leaderboard || Object.keys(leaderboard).length === 0) {
-      return new Response(JSON.stringify({ error: "Leaderboard is empty" }), {
+    if (!roomId || !finalScores) {
+      return new Response(JSON.stringify({ error: "Missing required fields" }), { 
         status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
-    // Determine individual winners
-    const maxScore = Math.max(...Object.values(leaderboard));
-    const winners = Object.entries(leaderboard)
-      .filter(([_, score]) => score === maxScore)
-      .map(([userId]) => userId);
-
-    let winningTeam: string | undefined = undefined;
-
-    if (isTeamGame && teamMap) {
-      const teamScores: Record<string, { total: number; count: number }> = {};
-
-      for (const [userId, score] of Object.entries(leaderboard)) {
-        const team = teamMap[userId];
-        if (!team) continue;
-        if (!teamScores[team]) teamScores[team] = { total: 0, count: 0 };
-        teamScores[team].total += score;
-        teamScores[team].count++;
-      }
-
-      const teamAverages = Object.fromEntries(
-        Object.entries(teamScores).map(([team, { total, count }]) => [
-          team,
-          total / count,
-        ])
-      );
-
-      winningTeam = Object.entries(teamAverages).sort(
-        (a, b) => b[1] - a[1]
-      )[0]?.[0];
+    // Determine the actual winner from scores if not provided
+    let actualWinner = winner;
+    if (!actualWinner && finalScores) {
+      const sortedPlayers = Object.entries(finalScores).sort(([,a], [,b]) => b - a);
+      actualWinner = sortedPlayers[0]?.[0] || null;
     }
 
-    return new Response(
-      JSON.stringify({
-        gameOver: true,
-        winners,
-        winningTeam,
-        leaderboard,
-      }),
-      {
-        status: 200,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-          "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-        }
-      }
-    );
+    const gameEndData = {
+      winner: actualWinner,
+      finalScores,
+      reason,
+      gameStats: gameStats || {},
+      timestamp: Date.now(),
+      endedAt: new Date().toISOString()
+    };
+
+    // Clean up the room from database
+    await cleanupGameRoom(roomId);
+
+    console.log('Game ended successfully:', {
+      roomId,
+      winner: actualWinner,
+      reason,
+      playerCount: Object.keys(finalScores).length
+    });
+
+    return new Response(JSON.stringify({
+      success: true,
+      ...gameEndData,
+      message: `Game ended: ${reason}`
+    }), { 
+      status: 200,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+
   } catch (err) {
     console.error("end-game error:", err);
-    return new Response(JSON.stringify({ error: "Internal Server Error" }), {
-      status: 500,
-    });
+    return new Response(
+      JSON.stringify({ error: "Internal Server Error" }),
+      { 
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      }
+    );
   }
 });

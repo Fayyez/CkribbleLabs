@@ -103,44 +103,89 @@ serve(async (req) => {
   }
 
   try {
+    const requestBody: RequestBody = await req.json();
+    console.log('📥 start-round request body:', requestBody);
+
     const {
       roomId,
       drawerId,
       selectedWord,
-      roundNumber,
+      roundNumber = 1,
       turnIndex = 0,
       turnOrder = [],
       usedWords = [],
       drawingTime = 60,
       theme = 'default',
       action
-    }: RequestBody = await req.json();
+    } = requestBody;
 
-    if (!roomId || !drawerId || !turnOrder.length) {
-      return new Response(JSON.stringify({ error: "Missing required fields" }), { 
+    // Enhanced validation with better error messages
+    if (!roomId) {
+      console.error('❌ Missing roomId');
+      return new Response(JSON.stringify({ error: "Missing roomId" }), { 
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
+    if (!drawerId) {
+      console.error('❌ Missing drawerId');
+      return new Response(JSON.stringify({ error: "Missing drawerId" }), { 
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (!action) {
+      console.error('❌ Missing action');
+      return new Response(JSON.stringify({ error: "Missing action" }), { 
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (turnOrder.length === 0) {
+      console.error('❌ Empty turnOrder');
+      return new Response(JSON.stringify({ error: "Empty turnOrder" }), { 
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    console.log('✅ Validation passed, loading word bank for theme:', theme);
     const wordBank = await loadWordBank(theme);
 
     if (action === 'generate_words') {
+      console.log('🎲 Generating word options');
       // Generate word options for the drawer
       const wordOptions = generateWordOptions(wordBank, usedWords, 3);
       
-      return new Response(JSON.stringify({
+      const response = {
         wordOptions,
         drawerId,
         roundNumber,
-        turnIndex
-      }), { 
+        turnIndex,
+        success: true
+      };
+
+      console.log('📤 Returning word options:', response);
+      
+      return new Response(JSON.stringify(response), { 
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
-    if (action === 'start_round' && selectedWord) {
+    if (action === 'start_round') {
+      if (!selectedWord) {
+        console.error('❌ Missing selectedWord for start_round action');
+        return new Response(JSON.stringify({ error: "Missing selectedWord for start_round action" }), { 
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      console.log('🚀 Starting round with selected word:', selectedWord);
       // Start the actual round with the selected word
       const newUsedWords = [...usedWords, selectedWord.toLowerCase()];
       
@@ -151,7 +196,7 @@ serve(async (req) => {
         roundStartTime: Date.now()
       });
 
-      return new Response(JSON.stringify({
+      const response = {
         round: roundNumber,
         drawerId,
         selectedWord,
@@ -161,22 +206,28 @@ serve(async (req) => {
         turnIndex,
         turnOrder,
         isRoundActive: true,
+        success: true,
         timestamp: Date.now()
-      }), { 
+      };
+
+      console.log('📤 Returning start round response:', response);
+
+      return new Response(JSON.stringify(response), { 
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
-    return new Response(JSON.stringify({ error: "Invalid action or missing selectedWord" }), { 
+    console.error('❌ Invalid action:', action);
+    return new Response(JSON.stringify({ error: `Invalid action: ${action}` }), { 
       status: 400,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
 
   } catch (err) {
-    console.error("start-round error:", err);
+    console.error("❌ start-round error:", err);
     return new Response(
-      JSON.stringify({ error: "Internal Server Error" }),
+      JSON.stringify({ error: "Internal Server Error", details: err.message }),
       { 
         status: 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
