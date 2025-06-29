@@ -50,6 +50,7 @@ const GamePage = () => {
     settings: gameSettings
   } = useSelector(state => state.game);
   const { correctGuesses } = useSelector(state => state.chat);
+  const { canDraw } = useSelector(state => state.canvas);
 
   const isDrawer = user?.id === drawerId;
   const hasGuessedCorrectly = correctGuesses.some(g => g.playerId === user?.id);
@@ -112,14 +113,25 @@ const GamePage = () => {
     }
   }, [roomId, user?.id, profile, dispatch]);
 
-  // Debug drawer state changes - simplified
+  // Debug drawer state changes and canvas permissions
   useEffect(() => {
-    console.log('🎨 Drawer changed:', {
+    console.log('🎨 Drawer state changed:', {
       drawerId,
       isDrawer,
-      currentWord: !!currentWord
+      currentWord: !!currentWord,
+      canDraw: canDraw,
+      timeRemaining
     });
-  }, [drawerId, isDrawer, currentWord]);
+    
+    // Ensure canDraw is properly synchronized with isDrawer when word is available
+    if (currentWord && isDrawer && !canDraw) {
+      console.warn('🔧 FIXING: Drawer has word but canDraw is false, correcting...');
+      dispatch(setCanDraw(true));
+    } else if (currentWord && !isDrawer && canDraw) {
+      console.warn('🔧 FIXING: Non-drawer has canDraw true, correcting...');
+      dispatch(setCanDraw(false));
+    }
+  }, [drawerId, isDrawer, currentWord, canDraw, timeRemaining, dispatch]);
 
   // Debug correctGuesses changes - simplified
   useEffect(() => {
@@ -496,14 +508,14 @@ const GamePage = () => {
           points: payload.points
         }));
         
-        // Only update scores if we're the drawer (centralized scoring)
+        // Only the drawer manages individual score updates (prevent duplication)
         if (payload.points && payload.playerId && isDrawer) {
           console.log('📊 [DRAWER] Updating individual score for correct guess:', payload.playerId, '+', payload.points);
           const updatedScores = { ...scores };
           updatedScores[payload.playerId] = (updatedScores[payload.playerId] || 0) + payload.points;
           dispatch(updateScores(updatedScores));
           
-          // Broadcast score update immediately to all players
+          // Broadcast score update immediately to all players (non-authoritative, just for real-time feedback)
           const channel = getChannel();
           if (channel && channel.state === 'joined') {
             channel.send({
@@ -511,8 +523,9 @@ const GamePage = () => {
               event: 'scores:update',
               payload: {
                 scores: updatedScores,
-                source: 'correct_guess',
-                timestamp: Date.now()
+                source: 'correct_guess_realtime',
+                timestamp: Date.now(),
+                isAuthoritative: false // Mark as non-authoritative to prevent conflicts
               }
             });
           }
@@ -663,19 +676,27 @@ const GamePage = () => {
         const payload = event.payload || event;
         
         if (payload.scores && typeof payload.scores === 'object') {
-          console.log('📊 Updating scores from broadcast:', payload.scores);
-          console.log('📊 Source:', payload.source, 'Authoritative:', payload.isAuthoritative);
+          console.log('📊 Score update details:', {
+            source: payload.source,
+            isAuthoritative: payload.isAuthoritative,
+            isDrawer: isDrawer,
+            currentScores: scores,
+            incomingScores: payload.scores
+          });
           
-          // Always update scores for authoritative updates or if we're not the drawer
-          if (payload.isAuthoritative || !isDrawer) {
+          // Apply updates based on authority and role
+          if (payload.isAuthoritative) {
+            // Always apply authoritative updates (like turn end)
             dispatch(updateScores(payload.scores));
-            console.log('✅ Applied score update');
+            console.log('✅ Applied authoritative score update');
+          } else if (!isDrawer && payload.source === 'correct_guess_realtime') {
+            // Non-drawers apply real-time guess updates for immediate feedback
+            dispatch(updateScores(payload.scores));
+            console.log('✅ Applied real-time guess update for non-drawer');
           } else {
-            console.log('⏭️ Skipped non-authoritative update (drawer manages own scores)');
-          }
-          
-          if (payload.source === 'turn_end_final') {
-            console.log('🎯 Received final authoritative scores for turn end');
+            console.log('⏭️ Skipped non-authoritative update:', {
+              reason: isDrawer ? 'drawer manages own scores' : 'non-authoritative source'
+            });
           }
         } else {
           console.warn('⚠️ Invalid scores update payload:', payload);
@@ -730,7 +751,10 @@ const GamePage = () => {
         hasRoomId: !!endRoundPayload.roomId,
         hasCurrentDrawerId: !!endRoundPayload.currentDrawerId,
         hasWord: !!endRoundPayload.word,
-        turnOrderLength: endRoundPayload.turnOrder.length
+        word: endRoundPayload.word,
+        turnOrderLength: endRoundPayload.turnOrder.length,
+        turnOrder: endRoundPayload.turnOrder,
+        completePayload: endRoundPayload
       });
       return;
     }
@@ -786,24 +810,28 @@ const GamePage = () => {
       setTimeout(() => {
         console.log('🎯 [DRAWER] Processing turn end with correct guesses');
         
+        // Use the points that were already calculated and awarded for correct guesses
         const playerScores = correctGuesses.map(g => ({
           playerId: g.playerId,
-          points: calculatePoints(g.timeTaken || 0),
+          points: g.points || calculatePoints(g.timeTaken || 0), // Use existing points if available
           timeTaken: g.timeTaken || 0,
           guessedCorrectly: true
         }));
 
         console.log('📊 [DRAWER] Ending turn with scores:', playerScores);
 
-        // Calculate and broadcast final scores before ending round
-        const currentScores = { ...scores };
-        playerScores.forEach(playerScore => {
-          currentScores[playerScore.playerId] = (currentScores[playerScore.playerId] || 0) + playerScore.points;
-        });
+        // Calculate final scores - scores for correct guesses should already be applied
+        const currentScores = { ...scores }; // Start with current scores (already includes correct guess points)
         
-        // Add drawer points (simplified - they get points based on how many guessed correctly)
+        // Only add drawer points (guessers' points were already added when they guessed correctly)
         const drawerPoints = Math.round(50 * (currentCorrectGuesses / totalGuessers));
         currentScores[drawerId] = (currentScores[drawerId] || 0) + drawerPoints;
+        
+        console.log('📊 [DRAWER] Turn end score calculation:', {
+          currentScoresBeforeDrawer: scores,
+          drawerPoints,
+          finalScores: currentScores
+        });
         
         console.log('📊 [DRAWER] Broadcasting final turn scores:', currentScores);
         
@@ -1081,7 +1109,12 @@ const GamePage = () => {
         // Start the round timer
         console.log('⏰ Starting round timer');
         const initialTime = gameSettings?.drawingTime || settings?.drawingTime || 60;
+        console.log('⏰ Timer initialized to:', initialTime, 'seconds');
         dispatch(updateTimer(initialTime));
+        
+        // Ensure drawing permissions are set correctly after word selection
+        console.log('🎨 [WORD SELECT] Confirming drawing permissions after word selection');
+        dispatch(setCanDraw(true));
         
         // Broadcast timer start to all players
         setTimeout(() => {

@@ -1,6 +1,7 @@
 import React from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { setBrushSize, setColor, setTool, undo, redo, clearCanvas } from '../redux/slices/canvasSlice';
+import '../styles/DrawingTools.css';
 
 const COLORS = [
   '#000000', '#FF0000', '#00FF00', '#0000FF', '#FFFF00',
