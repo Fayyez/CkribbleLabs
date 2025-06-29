@@ -2,6 +2,7 @@ import React, { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { supabase, callEdgeFunction } from '../lib/supabase';
+import '../styles/GamePage.css';
 import Canvas from '../components/Canvas';
 import DrawingTools from '../components/DrawingTools';
 import ChatBox from '../components/ChatBox';
@@ -45,7 +46,8 @@ const GamePage = () => {
     isGameOver,
     scores,
     turnOrder,
-    currentTurnIndex
+    currentTurnIndex,
+    settings: gameSettings
   } = useSelector(state => state.game);
   const { correctGuesses } = useSelector(state => state.chat);
 
@@ -54,6 +56,9 @@ const GamePage = () => {
 
   // Centralized score management - only drawer manages scores and turn endings
   const [processedCorrectGuesses, setProcessedCorrectGuesses] = useState(new Set());
+  
+  // Add state for correct guess notification
+  const [showCorrectGuess, setShowCorrectGuess] = useState(false);
   
   // Initialize room state if needed
   useEffect(() => {
@@ -183,8 +188,8 @@ const GamePage = () => {
               turnIndex: currentTurnIndex || 0,
               turnOrder: turnOrder && turnOrder.length > 0 ? turnOrder : players.map(p => p.id),
               usedWords: [],
-              drawingTime: settings?.drawingTime || 60,
-              theme: settings?.theme || 'default',
+              drawingTime: gameSettings?.drawingTime || settings?.drawingTime || 60,
+              theme: gameSettings?.theme || settings?.theme || 'default',
               action: 'generate_words'
             });
             
@@ -204,7 +209,7 @@ const GamePage = () => {
     // Run consistency check after a short delay to allow state to settle
     const timeoutId = setTimeout(checkStateConsistency, 1000);
     return () => clearTimeout(timeoutId);
-  }, [isGameOver, wordOptions, isDrawer, currentWord, isActive, players.length, roomId, user?.id, currentRound, currentTurnIndex, turnOrder, settings?.theme, dispatch]);
+  }, [isGameOver, wordOptions, isDrawer, currentWord, isActive, players.length, roomId, user?.id, currentRound, currentTurnIndex, turnOrder, gameSettings?.theme, settings?.theme, dispatch]);
 
   // Supabase channel for real-time updates
   useEffect(() => {
@@ -271,13 +276,13 @@ const GamePage = () => {
                                 currentWord && // Game must have actually started with a word
                                 remainingPlayers.length > 0 && 
                                 remainingPlayers.length <= 1 && 
-                                !settings?.isTeamGame;
+                                !(gameSettings?.isTeamGame || settings?.isTeamGame);
           
           console.log('🎯 Game ending analysis:', {
             isActive,
             hasCurrentWord: !!currentWord,
             remainingCount: remainingPlayers.length,
-            isTeamGame: settings?.isTeamGame,
+            isTeamGame: gameSettings?.isTeamGame || settings?.isTeamGame,
             shouldEndGame
           });
           
@@ -290,7 +295,7 @@ const GamePage = () => {
                 finalScores: scores
               }));
             }, 2000);
-          } else if (settings?.isTeamGame && isActive && currentWord) {
+          } else if ((gameSettings?.isTeamGame || settings?.isTeamGame) && isActive && currentWord) {
             // For team games, check if entire team left
             const teamCounts = remainingPlayers.reduce((counts, player) => {
               const team = player.team || 'Red';
@@ -343,15 +348,18 @@ const GamePage = () => {
           ...payload,
           turnOrder: payload.turnOrder || players.map(p => p.id),
           currentTurnIndex: 0,
-          totalRounds: payload.totalRounds || settings?.rounds || 3, // Use settings.rounds for totalRounds
-          settings: payload.gameState?.settings || settings // Include settings
+          totalRounds: payload.totalRounds || payload.settings?.rounds || settings?.rounds || 3,
+          // Prioritize settings from payload, then fallback to local settings
+          settings: payload.settings || payload.gameState?.settings || settings,
+          // Ensure drawing time is properly set
+          timeRemaining: payload.settings?.drawingTime || payload.timeRemaining || settings?.drawingTime || 60
         };
         
         console.log('Dispatching startGame with data:', gameData);
         dispatch(startGame(gameData));
         
         const canDraw = payload.nextDrawer === user?.id || payload.drawerId === user?.id;
-        console.log('Setting canDraw to:', canDraw, 'for user:', user?.id);
+        console.log('🎨 [GAME START] Setting canDraw to:', canDraw, 'for user:', user?.id, 'drawerId:', payload.drawerId || payload.nextDrawer);
         dispatch(setCanDraw(canDraw));
         dispatch(clearChat());
         
@@ -371,14 +379,22 @@ const GamePage = () => {
         console.log('Current user ID:', user?.id);
         console.log('Is this user the drawer?', payload.drawerId === user?.id);
         
-        // Enhanced payload with proper word length
+        // Enhanced payload with proper word length and timer
+        const drawingTime = payload.drawingTime || gameSettings?.drawingTime || settings?.drawingTime || 60;
         const enhancedPayload = {
           ...payload,
-          drawingTime: payload.drawingTime || settings?.drawingTime || 60
+          drawingTime: drawingTime
         };
         
         dispatch(startRound(enhancedPayload));
-        dispatch(setCanDraw(payload.drawerId === user?.id));
+        const isUserDrawer = payload.drawerId === user?.id;
+        dispatch(setCanDraw(isUserDrawer));
+        
+        console.log('🎨 [ROUND START] Setting canDraw to:', isUserDrawer, 'for user:', user?.id, 'drawerId:', payload.drawerId);
+        console.log('⏰ [ROUND START] Setting timer to:', drawingTime, 'seconds');
+        
+        // Initialize timer properly for the new round
+        dispatch(updateTimer(drawingTime));
         
         // Clear canvas for ALL players when a new turn starts
         console.log('🧹 Clearing canvas for new turn/round');
@@ -409,8 +425,13 @@ const GamePage = () => {
           
           // Set canvas drawing permissions
           const canUserDraw = drawerId === user?.id;
-          console.log('🎨 Setting canvas permission - canDraw:', canUserDraw, 'for user:', user?.id);
+          console.log('🎨 [WORD SELECTED] Setting canvas permission - canDraw:', canUserDraw, 'for user:', user?.id, 'drawerId:', drawerId);
           dispatch(setCanDraw(canUserDraw));
+          
+          // Ensure timer is properly set when word is selected
+          const currentTime = gameSettings?.drawingTime || settings?.drawingTime || 60;
+          console.log('⏰ [WORD SELECTED] Ensuring timer is set to:', currentTime);
+          dispatch(updateTimer(currentTime));
           
           console.log('📝 Word selection processed for all players');
         } else {
@@ -475,9 +496,35 @@ const GamePage = () => {
           points: payload.points
         }));
         
+        // Only update scores if we're the drawer (centralized scoring)
+        if (payload.points && payload.playerId && isDrawer) {
+          console.log('📊 [DRAWER] Updating individual score for correct guess:', payload.playerId, '+', payload.points);
+          const updatedScores = { ...scores };
+          updatedScores[payload.playerId] = (updatedScores[payload.playerId] || 0) + payload.points;
+          dispatch(updateScores(updatedScores));
+          
+          // Broadcast score update immediately to all players
+          const channel = getChannel();
+          if (channel && channel.state === 'joined') {
+            channel.send({
+              type: 'broadcast',
+              event: 'scores:update',
+              payload: {
+                scores: updatedScores,
+                source: 'correct_guess',
+                timestamp: Date.now()
+              }
+            });
+          }
+        }
+        
+        // Add both the correct guess and success message
         dispatch(addMessage({
-          type: 'system',
-          text: `${payload.playerName} guessed correctly!`,
+          type: 'correct',
+          text: `${payload.playerName} guessed the word correctly!`,
+          playerName: payload.playerName,
+          playerId: payload.playerId,
+          points: payload.points || 0,
           timestamp: Date.now()
         }));
       })
@@ -546,8 +593,8 @@ const GamePage = () => {
               turnIndex: payload.nextTurnIndex !== undefined ? payload.nextTurnIndex : 0,
               turnOrder: turnOrder && turnOrder.length > 0 ? turnOrder : players.map(p => p.id),
               usedWords: payload.usedWords || [],
-              drawingTime: settings?.drawingTime || 60,
-              theme: settings?.theme || 'default',
+              drawingTime: gameSettings?.drawingTime || settings?.drawingTime || 60,
+              theme: gameSettings?.theme || settings?.theme || 'default',
               action: 'generate_words'
             };
             
@@ -575,11 +622,11 @@ const GamePage = () => {
                     event: 'game:round',
                     payload: {
                       drawerId: payload.nextDrawer,
-                      roundNumber: payload.nextRound || currentRound,
-                      turnIndex: payload.nextTurnIndex || 0,
-                      wordOptions: result.wordOptions,
-                      drawingTime: settings?.drawingTime || 60,
-                      isNewRound: payload.isNewRound || false
+                                        roundNumber: payload.nextRound || currentRound,
+                  turnIndex: payload.nextTurnIndex || 0,
+                  wordOptions: result.wordOptions,
+                  drawingTime: gameSettings?.drawingTime || settings?.drawingTime || 60,
+                  isNewRound: payload.isNewRound || false
                     }
                   });
                 } else {
@@ -617,17 +664,18 @@ const GamePage = () => {
         
         if (payload.scores && typeof payload.scores === 'object') {
           console.log('📊 Updating scores from broadcast:', payload.scores);
+          console.log('📊 Source:', payload.source, 'Authoritative:', payload.isAuthoritative);
           
-          // Only update if this is not from the current user (prevent self-updates)
-          if (payload.source !== `user-${user?.id}`) {
+          // Always update scores for authoritative updates or if we're not the drawer
+          if (payload.isAuthoritative || !isDrawer) {
             dispatch(updateScores(payload.scores));
-            
-            // Update local scores state for drawer logic
-            if (isDrawer && payload.source === 'turn_end') {
-              console.log('🎯 [DRAWER] Received final scores for turn');
-            }
+            console.log('✅ Applied score update');
           } else {
-            console.log('📊 Ignoring self-generated score update');
+            console.log('⏭️ Skipped non-authoritative update (drawer manages own scores)');
+          }
+          
+          if (payload.source === 'turn_end_final') {
+            console.log('🎯 Received final authoritative scores for turn end');
           }
         } else {
           console.warn('⚠️ Invalid scores update payload:', payload);
@@ -648,7 +696,10 @@ const GamePage = () => {
 
   // Handle time up - ends current turn, not entire round
   const handleTimeUp = useCallback(async () => {
-    if (!isDrawer) return;
+    if (!isDrawer || !currentWord) {
+      console.warn('⚠️ handleTimeUp called but conditions not met:', { isDrawer, currentWord });
+      return;
+    }
     
     console.log('⏰ Time ran out, ending turn for drawer:', drawerId);
     const playerScores = correctGuesses.map(g => ({
@@ -660,18 +711,33 @@ const GamePage = () => {
 
     console.log('📊 Ending turn due to timeout with scores:', playerScores);
 
-    try {
-      const turnResult = await callEdgeFunction('end-round', {
-        roomId,
-        currentDrawerId: drawerId,
-        word: currentWord,
-        playerScores,
-        currentRound,
-        totalRounds,
-        turnOrder: turnOrder || players.map(p => p.id),
-        currentTurnIndex: currentTurnIndex || 0,
-        reason: 'timeout'
+    // Validate required fields before calling end-round
+    const endRoundPayload = {
+      roomId,
+      currentDrawerId: drawerId,
+      word: currentWord,
+      playerScores,
+      currentRound: currentRound || 1,
+      totalRounds: totalRounds || 3,
+      turnOrder: turnOrder && turnOrder.length > 0 ? turnOrder : players.map(p => p.id),
+      currentTurnIndex: currentTurnIndex || 0,
+      reason: 'timeout'
+    };
+
+    // Validate payload before sending
+    if (!endRoundPayload.roomId || !endRoundPayload.currentDrawerId || !endRoundPayload.word || endRoundPayload.turnOrder.length === 0) {
+      console.error('❌ Invalid payload for end-round:', {
+        hasRoomId: !!endRoundPayload.roomId,
+        hasCurrentDrawerId: !!endRoundPayload.currentDrawerId,
+        hasWord: !!endRoundPayload.word,
+        turnOrderLength: endRoundPayload.turnOrder.length
       });
+      return;
+    }
+
+    try {
+      console.log('📤 Sending end-round payload:', endRoundPayload);
+      const turnResult = await callEdgeFunction('end-round', endRoundPayload);
 
       console.log('📦 end-turn response for timeout:', turnResult);
       const channel = getChannel();
@@ -684,6 +750,7 @@ const GamePage = () => {
       }
     } catch (error) {
       console.error('❌ Failed to end turn on timeout:', error);
+      console.error('❌ Error details:', error.message || error);
     }
   }, [isDrawer, roomId, currentWord, correctGuesses, calculatePoints, drawerId, currentRound, totalRounds, turnOrder, currentTurnIndex, players, getChannel]);
 
@@ -738,7 +805,9 @@ const GamePage = () => {
         const drawerPoints = Math.round(50 * (currentCorrectGuesses / totalGuessers));
         currentScores[drawerId] = (currentScores[drawerId] || 0) + drawerPoints;
         
-        // Broadcast updated scores immediately
+        console.log('📊 [DRAWER] Broadcasting final turn scores:', currentScores);
+        
+        // Broadcast updated scores immediately to ALL players
         const channel = getChannel();
         if (channel && channel.state === 'joined') {
           channel.send({
@@ -746,10 +815,16 @@ const GamePage = () => {
             event: 'scores:update',
             payload: {
               scores: currentScores,
-              source: 'turn_end',
-              timestamp: Date.now()
+              source: 'turn_end_final',
+              timestamp: Date.now(),
+              isAuthoritative: true // Mark this as the authoritative score update
             }
           });
+          
+          // Also update local state immediately
+          dispatch(updateScores(currentScores));
+        } else {
+          console.error('❌ [DRAWER] Channel not available for score broadcasting');
         }
 
         callEdgeFunction('end-round', {
@@ -786,7 +861,13 @@ const GamePage = () => {
 
   // Timer synchronization for drawer
   useEffect(() => {
-    if (!isDrawer || !isActive || !currentWord) return;
+    // Only start timer if we have proper conditions and valid time
+    if (!isDrawer || !isActive || !currentWord || timeRemaining <= 0) {
+      if (isDrawer && timeRemaining <= 0) {
+        console.warn('⚠️ Timer not starting: timeRemaining is 0 or negative:', timeRemaining);
+      }
+      return;
+    }
 
     console.log('⏰ Starting timer for drawer, initial time:', timeRemaining);
     
@@ -795,7 +876,10 @@ const GamePage = () => {
         const currentTime = getState().game.timeRemaining;
         const newTime = Math.max(0, currentTime - 1);
         
-        console.log('⏰ Timer tick:', currentTime, '→', newTime);
+        // Only log timer ticks every 10 seconds to reduce noise
+        if (currentTime % 10 === 0 || newTime <= 10) {
+          console.log('⏰ Timer tick:', currentTime, '→', newTime);
+        }
         dispatch(updateTimer(newTime));
         
         // Broadcast timer update to other players
@@ -823,7 +907,7 @@ const GamePage = () => {
       console.log('⏰ Clearing timer interval');
       clearInterval(timerInterval);
     };
-  }, [isDrawer, isActive, currentWord, getChannel, handleTimeUp]);
+  }, [isDrawer, isActive, currentWord, timeRemaining, getChannel, handleTimeUp]);
 
   // Handle canvas path updates
   const handlePathUpdate = useCallback((path) => {
@@ -889,6 +973,10 @@ const GamePage = () => {
       if (result.isCorrect) {
         const points = calculatePoints(timeTaken);
         console.log('✅ Correct guess! Points awarded:', points);
+        
+        // Show success notification to the player who guessed correctly
+        setShowCorrectGuess(true);
+        setTimeout(() => setShowCorrectGuess(false), 3000); // Hide after 3 seconds
         
         // Broadcast correct guess to all players (including drawer for centralized management)
         channel.send({
@@ -964,8 +1052,8 @@ const GamePage = () => {
         turnIndex: currentTurnIndex || 0,
         turnOrder: turnOrder && turnOrder.length > 0 ? turnOrder : players.map(p => p.id),
         usedWords: [], // TODO: track used words
-        drawingTime: settings?.drawingTime || 60,
-        theme: settings?.theme || 'default',
+        drawingTime: gameSettings?.drawingTime || settings?.drawingTime || 60,
+        theme: gameSettings?.theme || settings?.theme || 'default',
         action: 'start_round'
       });
 
@@ -992,7 +1080,7 @@ const GamePage = () => {
 
         // Start the round timer
         console.log('⏰ Starting round timer');
-        const initialTime = settings?.drawingTime || 60;
+        const initialTime = gameSettings?.drawingTime || settings?.drawingTime || 60;
         dispatch(updateTimer(initialTime));
         
         // Broadcast timer start to all players
@@ -1023,8 +1111,8 @@ const GamePage = () => {
             turnIndex: currentTurnIndex || 0,
             turnOrder: turnOrder && turnOrder.length > 0 ? turnOrder : players.map(p => p.id),
             usedWords: [],
-            drawingTime: settings?.drawingTime || 60,
-            theme: settings?.theme || 'default',
+            drawingTime: gameSettings?.drawingTime || settings?.drawingTime || 60,
+            theme: gameSettings?.theme || settings?.theme || 'default',
             action: 'generate_words'
           });
           
@@ -1133,6 +1221,13 @@ const GamePage = () => {
 
   return (
     <div className="game-page">
+      {/* Correct Guess Notification */}
+      {showCorrectGuess && (
+        <div className="correct-guess-notification">
+          🎉 Correct! Well done! 🎉
+        </div>
+      )}
+      
       {/* Compact Top Header */}
       <div className="game-header-compact">
         <div className="round-info-compact">
@@ -1217,137 +1312,7 @@ const GamePage = () => {
         </div>
       </div>
 
-      {/* Compact CSS Styles */}
-      <style jsx>{`
-        .game-page {
-          height: 100vh;
-          display: flex;
-          flex-direction: column;
-          overflow: hidden;
-        }
 
-        .game-header-compact {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 8px 16px;
-          background: #f8f9fa;
-          border-bottom: 1px solid #e9ecef;
-          min-height: 50px;
-        }
-
-        .round-info-compact h3 {
-          margin: 0;
-          font-size: 14px;
-          font-weight: 600;
-          color: #495057;
-        }
-
-        .word-display-compact {
-          flex: 1;
-          text-align: center;
-        }
-
-        .word-display-compact .word-label {
-          font-size: 12px;
-          color: #6c757d;
-          margin-right: 8px;
-        }
-
-        .word-display-compact .word-text {
-          font-size: 18px;
-          font-weight: bold;
-          color: #007bff;
-        }
-
-        .word-display-compact .masked-word {
-          font-size: 16px;
-          font-weight: bold;
-          letter-spacing: 2px;
-          color: #495057;
-        }
-
-        .timer-compact {
-          min-width: 80px;
-          text-align: right;
-        }
-
-        .game-content-layout {
-          display: flex;
-          flex: 1;
-          gap: 8px;
-          padding: 8px;
-          overflow: hidden;
-        }
-
-        .sidebar-left {
-          width: 200px;
-          min-width: 200px;
-          background: #ffffff;
-          border: 1px solid #e9ecef;
-          border-radius: 8px;
-          overflow-y: auto;
-        }
-
-        .canvas-section {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          background: #ffffff;
-          border: 1px solid #e9ecef;
-          border-radius: 8px;
-          overflow: hidden;
-        }
-
-        .player-status-compact {
-          padding: 8px 12px;
-          background: #f8f9fa;
-          border-bottom: 1px solid #e9ecef;
-          text-align: center;
-          font-size: 12px;
-        }
-
-        .drawing-tools-compact {
-          padding: 8px;
-          background: #f8f9fa;
-          border-top: 1px solid #e9ecef;
-        }
-
-        .sidebar-right {
-          width: 280px;
-          min-width: 280px;
-          background: #ffffff;
-          border: 1px solid #e9ecef;
-          border-radius: 8px;
-          overflow: hidden;
-        }
-
-        @media (max-width: 1200px) {
-          .sidebar-left {
-            width: 180px;
-            min-width: 180px;
-          }
-          .sidebar-right {
-            width: 250px;
-            min-width: 250px;
-          }
-        }
-
-        @media (max-width: 900px) {
-          .game-content-layout {
-            flex-direction: column;
-          }
-          .sidebar-left, .sidebar-right {
-            width: 100%;
-            min-width: unset;
-            height: 200px;
-          }
-          .canvas-section {
-            flex: 1;
-            min-height: 400px;
-          }
-        }
-      `}</style>
     </div>
   );
 };
@@ -1356,7 +1321,7 @@ const GamePage = () => {
 const GameOverScreen = () => {
   const navigate = useNavigate();
   const dispatch = useDispatch();
-  const { winner, teamScores, scores } = useSelector(state => state.game);
+  const { winner, teamScores, scores, settings: gameSettings } = useSelector(state => state.game);
   const { players, settings, roomId } = useSelector(state => state.room);
   const { user } = useSelector(state => state.auth);
 
@@ -1381,8 +1346,8 @@ const GameOverScreen = () => {
             finalScores: scores,
             reason: 'completed',
             gameStats: {
-              totalRounds: settings?.rounds || 0,
-              totalTurns: players.length * (settings?.rounds || 0),
+                          totalRounds: gameSettings?.rounds || settings?.rounds || 0,
+            totalTurns: players.length * (gameSettings?.rounds || settings?.rounds || 0),
               gameDuration: Date.now() - (Date.now() - 300000), // Approximate
               playerCount: players.length
             }
@@ -1424,19 +1389,14 @@ const GameOverScreen = () => {
                     <img 
                       src={player.avatarUrl} 
                       alt={player.displayName}
-                      style={{
-                        width: '32px',
-                        height: '32px',
-                        borderRadius: '50%',
-                        objectFit: 'cover'
-                      }}
+                      className="avatar-image"
                       onError={(e) => {
                         e.target.style.display = 'none';
                         e.target.nextSibling.style.display = 'inline';
                       }}
                     />
                   ) : null}
-                  <span style={player.avatarUrl && !player.avatarUrl.includes('🤷') ? { display: 'none' } : {}}>
+                  <span className={player.avatarUrl && !player.avatarUrl.includes('🤷') ? 'avatar-fallback hidden' : 'avatar-fallback'}>
                     🤷
                   </span>
                 </span>

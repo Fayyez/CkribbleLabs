@@ -1,5 +1,6 @@
 import React from 'react';
 import { useSelector } from 'react-redux';
+import '../styles/Leaderboard.css';
 
 const Leaderboard = () => {
   const { scores, leaderboard } = useSelector(state => state.game);
@@ -70,19 +71,13 @@ const Leaderboard = () => {
                     <img 
                       src={player.avatarUrl} 
                       alt={player.displayName}
-                      style={{
-                        width: '18px',
-                        height: '18px',
-                        borderRadius: '50%',
-                        objectFit: 'cover'
-                      }}
                       onError={(e) => {
                         e.target.style.display = 'none';
                         e.target.nextSibling.style.display = 'inline';
                       }}
                     />
                   ) : null}
-                  <span style={player.avatarUrl && !player.avatarUrl.includes('🤷') ? { display: 'none' } : {}}>
+                  <span className={player.avatarUrl && !player.avatarUrl.includes('🤷') ? 'hidden' : ''}>
                     🤷
                   </span>
                 </span>
@@ -126,119 +121,7 @@ const Leaderboard = () => {
         </div>
       )}
 
-      {/* Compact CSS Styles */}
-      <style jsx>{`
-        .leaderboard-compact {
-          height: 100%;
-          display: flex;
-          flex-direction: column;
-          font-size: 12px;
-        }
 
-        .leaderboard-header {
-          padding: 8px 12px;
-          background: #f8f9fa;
-          border-bottom: 1px solid #e9ecef;
-        }
-
-        .leaderboard-header h4 {
-          margin: 0;
-          font-size: 14px;
-          font-weight: 600;
-        }
-
-        .scores-list-compact {
-          flex: 1;
-          overflow-y: auto;
-          padding: 8px;
-        }
-
-        .score-item-compact {
-          display: flex;
-          align-items: center;
-          padding: 6px 8px;
-          margin-bottom: 4px;
-          background: #f8f9fa;
-          border-radius: 4px;
-          border: 1px solid #e9ecef;
-        }
-
-        .rank-compact {
-          font-weight: bold;
-          font-size: 11px;
-          color: #495057;
-          min-width: 20px;
-        }
-
-        .player-info-compact {
-          flex: 1;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          margin: 0 8px;
-        }
-
-        .avatar-compact {
-          display: flex;
-          align-items: center;
-        }
-
-        .name-score-compact {
-          flex: 1;
-          min-width: 0;
-        }
-
-        .name-compact {
-          display: block;
-          font-weight: 500;
-          font-size: 11px;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        .team-compact {
-          display: block;
-          font-size: 9px;
-          font-weight: 400;
-        }
-
-        .score-compact {
-          font-weight: bold;
-          font-size: 12px;
-          color: #007bff;
-          min-width: 25px;
-          text-align: right;
-        }
-
-        .team-scores-compact {
-          padding: 8px 12px;
-          border-top: 1px solid #e9ecef;
-          background: #f8f9fa;
-        }
-
-        .team-scores-compact h5 {
-          margin: 0 0 6px 0;
-          font-size: 12px;
-          font-weight: 600;
-        }
-
-        .team-score-compact {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 3px 0;
-          font-size: 11px;
-        }
-
-        .team-name-compact {
-          font-weight: 500;
-        }
-
-        .team-stats-compact {
-          font-size: 10px;
-        }
-      `}</style>
     </div>
   );
 };

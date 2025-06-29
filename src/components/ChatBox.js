@@ -3,7 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { setCurrentGuess, addMessage, addReaction, setRateLimit } from '../redux/slices/chatSlice';
 
 const EMOJI_REACTIONS = ['👍', '😂', '😮', '🤔', '🔥'];
-const RATE_LIMIT_DELAY = 1000; // 1 second between guesses
+const RATE_LIMIT_DELAY = 100; // Reduced to 100ms for better responsiveness
 
 const ChatBox = ({ onGuessSubmit, canGuess = true }) => {
   const dispatch = useDispatch();
@@ -36,7 +36,7 @@ const ChatBox = ({ onGuessSubmit, canGuess = true }) => {
   const isRateLimited = rateLimitedUntil && Date.now() < rateLimitedUntil;
   const isDrawer = user?.id === drawerId;
   const hasGuessedCorrectly = correctGuesses.some(g => g.playerId === user?.id);
-  const shouldShowInput = canGuess && isActive && !isDrawer && !isRateLimited && !hasGuessedCorrectly;
+  const shouldShowInput = canGuess && isActive && !isDrawer && !hasGuessedCorrectly;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -44,7 +44,7 @@ const ChatBox = ({ onGuessSubmit, canGuess = true }) => {
 
     const guess = message.trim();
     
-    // Check rate limiting
+    // Check rate limiting (reduced to 100ms)
     if (lastGuessTime && Date.now() - lastGuessTime < RATE_LIMIT_DELAY) {
       dispatch(setRateLimit(Date.now() + RATE_LIMIT_DELAY));
       return;
@@ -81,7 +81,7 @@ const ChatBox = ({ onGuessSubmit, canGuess = true }) => {
       case 'system-close':
         return msg.text;
       case 'correct':
-        return `${msg.playerName} guessed correctly! 🎉`;
+        return `🎉 ${msg.playerName} guessed correctly! (+${msg.points || 0} points)`;
       case 'guess':
         // Only show the guess if it was wrong or close
         if (msg.isClose) {
@@ -163,7 +163,7 @@ const ChatBox = ({ onGuessSubmit, canGuess = true }) => {
               onChange={(e) => setMessage(e.target.value)}
               onKeyPress={handleKeyPress}
               placeholder={currentWord ? "Type guess & press Enter..." : "Waiting..."}
-              className={`guess-input-compact ${isGuessCorrect ? 'correct' : ''} ${isGuessClose ? 'close' : ''}`}
+              className={`guess-input-compact ${isGuessClose ? 'close' : ''}`}
               maxLength={30}
               disabled={isRateLimited || !currentWord}
               autoComplete="off"
@@ -282,6 +282,14 @@ const ChatBox = ({ onGuessSubmit, canGuess = true }) => {
           font-style: italic;
         }
 
+        .message-compact.correct {
+          background: #d4edda;
+          color: #155724;
+          text-align: center;
+          font-style: italic;
+          font-weight: bold;
+        }
+
         .message-compact.guess {
           background: #f8f9fa;
         }
@@ -326,10 +334,7 @@ const ChatBox = ({ onGuessSubmit, canGuess = true }) => {
           box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
         }
 
-        .guess-input-compact.correct {
-          border-color: #28a745;
-          background: #d4edda;
-        }
+
 
         .guess-input-compact.close {
           border-color: #ffc107;

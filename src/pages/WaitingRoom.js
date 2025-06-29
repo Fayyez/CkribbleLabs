@@ -225,7 +225,19 @@ const WaitingRoom = () => {
             isActive: true,
             currentRound: response.round || 1,
             totalRounds: settings.rounds,
-            timeRemaining: settings.drawingTime
+            timeRemaining: settings.drawingTime,
+            // Explicitly include all settings for all players
+            settings: {
+              rounds: settings.rounds,
+              drawingTime: settings.drawingTime,
+              isTeamGame: settings.isTeamGame,
+              teamNames: settings.teamNames || [],
+              theme: settings.theme,
+              isThemedGame: settings.isThemedGame,
+              maxPlayers: settings.maxPlayers || 22,
+              maxWordLength: settings.maxWordLength
+            },
+            players: players // Include players list for state consistency
           }
         });
 

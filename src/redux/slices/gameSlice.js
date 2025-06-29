@@ -21,6 +21,7 @@ const initialState = {
   teamScores: {},
   loading: false,
   error: null,
+  settings: null, // Store game settings
   // Add progress tracking
   turnsInCurrentRound: 0,
   turnsPerRound: 0,
@@ -42,6 +43,7 @@ const gameSlice = createSlice({
         gameStartTime, 
         isActive = true, 
         settings,
+        timeRemaining,
         ...rest 
       } = action.payload;
       
@@ -54,6 +56,13 @@ const gameSlice = createSlice({
       state.isGameOver = false;
       state.currentTurnIndex = 0;
       
+      // Set time remaining from settings if provided
+      if (timeRemaining !== undefined) {
+        state.timeRemaining = timeRemaining;
+      } else if (settings?.drawingTime) {
+        state.timeRemaining = settings.drawingTime;
+      }
+      
       // Set turn order and calculate turns per round
       if (turnOrder && Array.isArray(turnOrder) && turnOrder.length > 0) {
         state.turnOrder = turnOrder;
@@ -61,6 +70,11 @@ const gameSlice = createSlice({
         state.totalTurns = state.turnsPerRound * state.totalRounds;
         state.turnsInCurrentRound = 1;
         state.completedTurns = 0;
+      }
+      
+      // Store settings for future reference
+      if (settings) {
+        state.settings = settings;
       }
       
       // Apply any other payload properties
@@ -77,7 +91,9 @@ const gameSlice = createSlice({
         drawerId: state.drawerId,
         turnOrder: state.turnOrder,
         turnsPerRound: state.turnsPerRound,
-        totalTurns: state.totalTurns
+        totalTurns: state.totalTurns,
+        timeRemaining: state.timeRemaining,
+        hasSettings: !!state.settings
       });
     },
     startRound: (state, action) => {
