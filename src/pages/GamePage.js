@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback, useMemo } from 'react';
+import React, { useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { supabase, callEdgeFunction } from '../lib/supabase';
@@ -16,7 +16,8 @@ import {
   updateTimer,
   updateScores,
   setWordOptions,
-  selectWord
+  selectWord,
+  resetGameOverState
 } from '../redux/slices/gameSlice';
 import { setCanDraw, clearCanvas, addRemotePath } from '../redux/slices/canvasSlice';
 import { addMessage, addCorrectGuess, setGuessResult, clearChat } from '../redux/slices/chatSlice';
@@ -26,6 +27,9 @@ const GamePage = () => {
   const { roomId } = useParams();
   const navigate = useNavigate();
   const dispatch = useDispatch();
+  
+  // Use ref to store channel instance to prevent recreation
+  const channelRef = useRef(null);
   
   const { user, profile } = useSelector(state => state.auth);
   const { players, settings } = useSelector(state => state.room);
@@ -51,22 +55,32 @@ const GamePage = () => {
   // Initialize room state if needed
   useEffect(() => {
     const initializeRoomState = async () => {
-      if (!roomId || !user?.id || players.length > 0) return;
+      if (!roomId || !user?.id) return;
       
-      try {
-        console.log('🔧 Initializing room state for GamePage');
-        const response = await callEdgeFunction('join-room', {
-          roomId,
-          playerId: user.id,
-          action: 'get-state'
-        });
-        
-        if (response?.success && response?.room) {
-          console.log('🏠 Got room state:', response.room);
-          dispatch(setPlayers(response.room.players || []));
+      // Always try to get fresh room state when component mounts or when we have no players
+      if (players.length === 0) {
+        try {
+          console.log('🔧 Initializing room state for GamePage (no players found)');
+          const response = await callEdgeFunction('join-room', {
+            roomId,
+            playerId: user.id,
+            action: 'get-state'
+          });
+          
+          if (response?.success && response?.room) {
+            console.log('🏠 Got room state:', response.room);
+            if (response.room.players && response.room.players.length > 0) {
+              dispatch(setPlayers(response.room.players));
+              console.log('✅ Successfully set players from room state:', response.room.players.length);
+            }
+          } else {
+            console.warn('⚠️ No room state received or invalid response');
+          }
+        } catch (error) {
+          console.error('❌ Failed to initialize room state:', error);
         }
-      } catch (error) {
-        console.error('❌ Failed to initialize room state:', error);
+      } else {
+        console.log('✅ Players already loaded:', players.length);
       }
     };
     
@@ -99,13 +113,14 @@ const GamePage = () => {
     console.log('Room ID:', roomId);
     console.log('User ID:', user?.id);
     console.log('Profile:', profile);
-    console.log('Players:', players);
+    console.log('Players Count:', players.length);
+    console.log('Players Details:', players.map(p => ({ id: p.id, name: p.displayName })));
     console.log('Settings:', settings);
     console.log('Game State:', {
       isActive,
       drawerId,
       currentWord,
-      wordOptions,
+      wordOptions: wordOptions.length,
       wordLength,
       timeRemaining,
       currentRound,
@@ -118,6 +133,15 @@ const GamePage = () => {
     console.log('Is Drawer:', isDrawer);
     console.log('Has Guessed Correctly:', hasGuessedCorrectly);
     console.log('Correct Guesses:', correctGuesses);
+    
+    // Critical diagnostic
+    if (isGameOver && isActive === false) {
+      console.error('🚨 GAME OVER CONDITION DETECTED!');
+      console.error('🚨 isGameOver:', isGameOver);
+      console.error('🚨 isActive:', isActive);
+      console.error('🚨 Players count:', players.length);
+      console.error('🚨 This should not happen during normal gameplay!');
+    }
     console.log('===========================');
   }, [roomId, user?.id, profile, players, settings, isActive, drawerId, currentWord, wordOptions, wordLength, timeRemaining, currentRound, totalRounds, isGameOver, scores, turnOrder, currentTurnIndex, isDrawer, hasGuessedCorrectly, correctGuesses]);
 
@@ -140,6 +164,62 @@ const GamePage = () => {
     return Math.round(maxPoints * timeFactor);
   }, []);
 
+  // Helper function to get or create channel
+  const getChannel = useCallback(() => {
+    if (!channelRef.current) {
+      channelRef.current = supabase.channel(`room:${roomId}`);
+    }
+    return channelRef.current;
+  }, [roomId]);
+
+  // State consistency monitor and auto-recovery
+  useEffect(() => {
+    // Check for inconsistent game state and auto-fix
+    const checkStateConsistency = () => {
+      // If we have word options but game is marked as game over, that's inconsistent
+      if (isGameOver && wordOptions.length > 0 && isDrawer && !currentWord) {
+        console.warn('🔧 Detected inconsistent state: game over but drawer has word options');
+        console.warn('🔧 Auto-fixing: resetting game over state');
+        dispatch(resetGameOverState());
+        return;
+      }
+
+      // If we're in an active game with a drawer but no word and no options, regenerate options
+      if (isActive && isDrawer && !currentWord && wordOptions.length === 0 && players.length > 1) {
+        console.warn('🔧 Detected missing word options for active drawer');
+        console.warn('🔧 Auto-fixing: regenerating word options');
+        
+        const regenerateWords = async () => {
+          try {
+            const wordResult = await callEdgeFunction('start-round', {
+              roomId,
+              drawerId: user.id,
+              roundNumber: currentRound,
+              turnIndex: currentTurnIndex || 0,
+              turnOrder: turnOrder || players.map(p => p.id),
+              usedWords: [],
+              theme: settings?.theme || 'default',
+              action: 'generate_words'
+            });
+            
+            if (wordResult?.wordOptions) {
+              dispatch(setWordOptions(wordResult.wordOptions));
+              console.log('✅ Auto-recovery: Word options regenerated successfully');
+            }
+          } catch (error) {
+            console.error('❌ Auto-recovery failed:', error);
+          }
+        };
+        
+        regenerateWords();
+      }
+    };
+
+    // Run consistency check after a short delay to allow state to settle
+    const timeoutId = setTimeout(checkStateConsistency, 1000);
+    return () => clearTimeout(timeoutId);
+  }, [isGameOver, wordOptions, isDrawer, currentWord, isActive, players.length, roomId, user?.id, currentRound, currentTurnIndex, turnOrder, settings?.theme, dispatch]);
+
   // Supabase channel for real-time updates
   useEffect(() => {
     if (!roomId) {
@@ -148,7 +228,7 @@ const GamePage = () => {
     }
 
     console.log('🔗 Setting up Supabase channel for room:', roomId);
-    const channel = supabase.channel(`room:${roomId}`);
+    const channel = getChannel();
 
     channel
       .on('broadcast', { event: 'player:join' }, (payload) => {
@@ -162,7 +242,10 @@ const GamePage = () => {
         console.log('👋 Player leave event received in GamePage:', payload);
         const playerData = payload.payload || payload;
         
-        if (playerData?.playerId) {
+        if (playerData?.playerId && playerData.playerId !== user?.id) {
+          console.log('🔍 Processing player leave for:', playerData.playerId);
+          console.log('🔍 Current players before removal:', players.map(p => ({ id: p.id, name: p.displayName })));
+          
           dispatch(removePlayer(playerData.playerId));
           
           // Add a system message about the player leaving
@@ -175,10 +258,26 @@ const GamePage = () => {
           // Check if we need to end the game due to insufficient players
           const remainingPlayers = players.filter(p => p.id !== playerData.playerId);
           console.log('👥 Remaining players after leave:', remainingPlayers.length);
+          console.log('👥 Remaining players details:', remainingPlayers.map(p => ({ id: p.id, name: p.displayName })));
           
-          // For non-team games, end if only 1 player remains
-          if (!settings?.isTeamGame && remainingPlayers.length <= 1) {
-            console.log('🏁 Ending game - not enough players remaining');
+          // CRITICAL: Only end game if we're truly in an active game state with multiple players originally
+          // and now have insufficient players, AND the game was actually started (not just in lobby)
+          const shouldEndGame = isActive && 
+                                currentWord && // Game must have actually started with a word
+                                remainingPlayers.length > 0 && 
+                                remainingPlayers.length <= 1 && 
+                                !settings?.isTeamGame;
+          
+          console.log('🎯 Game ending analysis:', {
+            isActive,
+            hasCurrentWord: !!currentWord,
+            remainingCount: remainingPlayers.length,
+            isTeamGame: settings?.isTeamGame,
+            shouldEndGame
+          });
+          
+          if (shouldEndGame) {
+            console.log('🏁 Ending game - not enough players remaining for active game');
             setTimeout(() => {
               dispatch(endGame({
                 winner: remainingPlayers[0]?.id || null,
@@ -186,9 +285,8 @@ const GamePage = () => {
                 finalScores: scores
               }));
             }, 2000);
-          }
-          // For team games, check if entire team left
-          else if (settings?.isTeamGame) {
+          } else if (settings?.isTeamGame && isActive && currentWord) {
+            // For team games, check if entire team left
             const teamCounts = remainingPlayers.reduce((counts, player) => {
               const team = player.team || 'Red';
               counts[team] = (counts[team] || 0) + 1;
@@ -209,7 +307,18 @@ const GamePage = () => {
                 }));
               }, 2000);
             }
+          } else {
+            console.log('🔄 Not ending game - conditions not met for game end', {
+              isActive,
+              hasCurrentWord: !!currentWord,
+              remainingCount: remainingPlayers.length,
+              reason: 'insufficient_conditions'
+            });
           }
+        } else if (playerData?.playerId === user?.id) {
+          console.log('🚫 Ignoring own leave event to prevent premature game ending');
+        } else {
+          console.log('⚠️ Invalid player leave data:', playerData);
         }
       })
       .on('broadcast', { event: 'game:start' }, (event) => {
@@ -217,7 +326,13 @@ const GamePage = () => {
         const payload = event.payload || event;
         console.log('🎮 Extracted payload:', payload);
         console.log('Current user ID:', user?.id);
-        console.log('Players available:', players);
+        console.log('Players available before game start:', players.map(p => ({ id: p.id, name: p.displayName })));
+        
+        // Ensure we have players data - if not, try to get it from the payload
+        if (players.length === 0 && payload.players) {
+          console.log('🔧 Setting players from game start payload:', payload.players);
+          dispatch(setPlayers(payload.players));
+        }
         
         const gameData = {
           ...payload,
@@ -377,9 +492,12 @@ const GamePage = () => {
 
     return () => {
       console.log('🔌 Removing channel for room:', roomId);
-      supabase.removeChannel(channel);
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+        channelRef.current = null;
+      }
     };
-  }, [roomId, user?.id, dispatch, players, settings, turnOrder]);
+  }, [roomId, user?.id, getChannel]);
 
   // Handle time up
   const handleTimeUp = useCallback(async () => {
@@ -409,7 +527,7 @@ const GamePage = () => {
       });
 
       console.log('📦 end-round response for timeout:', roundResult);
-      const channel = supabase.channel(`room:${roomId}`);
+      const channel = getChannel();
       channel.send({
         type: 'broadcast',
         event: 'game:round-end',
@@ -432,7 +550,7 @@ const GamePage = () => {
         dispatch(updateTimer(newTime));
         
         // Broadcast timer update to other players
-        const channel = supabase.channel(`room:${roomId}`);
+        const channel = getChannel();
         channel.send({
           type: 'broadcast',
           event: 'timer:update',
@@ -456,25 +574,28 @@ const GamePage = () => {
   const handlePathUpdate = useCallback((path) => {
     if (!isDrawer) return;
     
-    console.log('🎨 Canvas path update from drawer');
-    const channel = supabase.channel(`room:${roomId}`);
-    channel.send({
-      type: 'broadcast',
-      event: 'canvas:update',
-      payload: { 
-        path,
-        playerId: user.id,
-        timestamp: Date.now()
-      }
-    });
-  }, [isDrawer, roomId, user?.id]);
+    console.log('🎨 Canvas path update from drawer, path:', path);
+    const channel = getChannel();
+    if (channel && channel.state === 'joined' && path) {
+      channel.send({
+        type: 'broadcast',
+        event: 'canvas:update',
+        payload: path // Send the path directly, not nested
+      });
+    } else {
+      console.warn('⚠️ Cannot send canvas update:', { 
+        channelState: channel?.state, 
+        hasPath: !!path 
+      });
+    }
+  }, [isDrawer, getChannel, user?.id]);
 
   // Handle canvas clear
   const handleCanvasClear = useCallback(() => {
     if (!isDrawer) return;
     
     console.log('🧹 Canvas clear from drawer');
-    const channel = supabase.channel(`room:${roomId}`);
+    const channel = getChannel();
     channel.send({
       type: 'broadcast',
       event: 'canvas:clear',
@@ -507,7 +628,7 @@ const GamePage = () => {
       console.log('💭 Guess result:', result);
       dispatch(setGuessResult(result));
 
-      const channel = supabase.channel(`room:${roomId}`);
+      const channel = getChannel();
       const timeTaken = 60 - timeRemaining;
       
       if (result.isCorrect) {
@@ -612,14 +733,21 @@ const GamePage = () => {
 
   // Handle word selection
   const handleWordSelect = useCallback(async (selectedWord) => {
-    if (!isDrawer) {
-      console.log('🚫 Word selection blocked - user is not drawer');
+    if (!isDrawer || !selectedWord) {
+      console.log('🚫 Word selection blocked:', { 
+        isDrawer, 
+        hasSelectedWord: !!selectedWord 
+      });
       return;
     }
 
     console.log('📝 Drawer selecting word:', selectedWord);
 
     try {
+      // Immediately update UI state to prevent modal from showing
+      dispatch(setWordOptions([]));
+      dispatch(selectWord(selectedWord));
+      
       // Start the round with selected word
       const roundResult = await callEdgeFunction('start-round', {
         roomId,
@@ -635,43 +763,73 @@ const GamePage = () => {
       });
 
       console.log('📦 start-round response after word selection:', roundResult);
-
-      // Clear word options immediately to close popup
-      dispatch(setWordOptions([]));
-      dispatch(selectWord(selectedWord));
+      
+      // Validate the response
+      if (!roundResult || !roundResult.selectedWord) {
+        throw new Error('Invalid response from start-round function');
+      }
       
       // Broadcast word selection (without revealing the word to others)
-      const channel = supabase.channel(`room:${roomId}`);
-      console.log('📡 Broadcasting word selection');
-      channel.send({
-        type: 'broadcast',
-        event: 'word:selected',
-        payload: {
-          word: selectedWord,
-          wordLength: selectedWord.length,
-          drawerId: user.id
-        }
-      });
-
-      // Start the round timer
-      console.log('⏰ Starting round timer');
-      const initialTime = settings?.drawingTime || 60;
-      dispatch(updateTimer(initialTime));
-      
-      // Broadcast timer start to all players
-      setTimeout(() => {
+      const channel = getChannel();
+      if (channel && channel.state === 'joined') {
+        console.log('📡 Broadcasting word selection');
         channel.send({
           type: 'broadcast',
-          event: 'timer:update',
+          event: 'word:selected',
           payload: {
-            timeRemaining: initialTime
+            word: selectedWord,
+            wordLength: selectedWord.length,
+            drawerId: user.id
           }
         });
-      }, 100);
+
+        // Start the round timer
+        console.log('⏰ Starting round timer');
+        const initialTime = settings?.drawingTime || 60;
+        dispatch(updateTimer(initialTime));
+        
+        // Broadcast timer start to all players
+        setTimeout(() => {
+          if (channel && channel.state === 'joined') {
+            channel.send({
+              type: 'broadcast',
+              event: 'timer:update',
+              payload: {
+                timeRemaining: initialTime
+              }
+            });
+          }
+        }, 100);
+      } else {
+        console.warn('⚠️ Channel not available for broadcasting');
+      }
     } catch (error) {
       console.error('❌ Error selecting word:', error);
+      // Restore word options on error
+      if (wordOptions.length === 0) {
+        console.log('🔄 Attempting to regenerate word options due to error');
+        try {
+          const wordResult = await callEdgeFunction('start-round', {
+            roomId,
+            drawerId: user.id,
+            roundNumber: currentRound,
+            turnIndex: currentTurnIndex || 0,
+            turnOrder: turnOrder || players.map(p => p.id),
+            usedWords: [],
+            theme: settings?.theme || 'default',
+            action: 'generate_words'
+          });
+          
+          if (wordResult?.wordOptions) {
+            dispatch(setWordOptions(wordResult.wordOptions));
+            console.log('✅ Word options regenerated successfully');
+          }
+        } catch (regenerateError) {
+          console.error('❌ Failed to regenerate word options:', regenerateError);
+        }
+      }
     }
-  }, [isDrawer, roomId, user?.id, dispatch, currentRound, currentTurnIndex, turnOrder, players, settings]);
+  }, [isDrawer, roomId, user?.id, dispatch, currentRound, currentTurnIndex, turnOrder, players, settings, getChannel, wordOptions]);
 
   // Handle player leaving (cleanup)
   useEffect(() => {
@@ -694,6 +852,8 @@ const GamePage = () => {
       if (document.hidden && roomId && user?.id) {
         // User switched tabs or minimized browser, but don't leave room
         console.log('🙈 User went away, but staying in room');
+      } else if (!document.hidden && roomId && user?.id) {
+        console.log('👀 User came back to the game');
       }
     };
 
@@ -712,33 +872,53 @@ const GamePage = () => {
       if (roomId && user?.id && profile) {
         console.log('🚪 GamePage unmounting, leaving room');
         
-        // Broadcast leave event to other players first
-        const channel = supabase.channel(`room:${roomId}`);
-        channel.send({
-          type: 'broadcast',
-          event: 'player:leave',
-          payload: {
-            playerId: user.id,
-            playerName: profile.displayName || 'Anonymous',
-            timestamp: Date.now()
+        try {
+          // Broadcast leave event to other players first
+          const channel = getChannel();
+          if (channel && channel.state === 'joined') {
+            channel.send({
+              type: 'broadcast',
+              event: 'player:leave',
+              payload: {
+                playerId: user.id,
+                playerName: profile.displayName || 'Anonymous',
+                timestamp: Date.now()
+              }
+            });
           }
-        });
-        
-        // Then actually leave the room
-        callEdgeFunction('join-room', {
-          roomId,
-          playerId: user.id,
-          action: 'leave'
-        }).catch(error => {
-          console.error('Error leaving room on unmount:', error);
-        });
+          
+          // Then actually leave the room
+          callEdgeFunction('join-room', {
+            roomId,
+            playerId: user.id,
+            action: 'leave'
+          }).catch(error => {
+            console.error('Error leaving room on unmount:', error);
+          });
+        } catch (error) {
+          console.error('Error during cleanup:', error);
+        }
       }
     };
-  }, [roomId, user?.id, profile]);
+  }, [roomId, user?.id, profile, getChannel]);
 
-  if (isGameOver) {
+  // Defensive check - only show game over screen if game is actually over
+  // Prevent premature game over screen due to state corruption
+  const shouldShowGameOver = isGameOver && (
+    !isActive || // Game is definitely inactive
+    players.length <= 1 || // Actually insufficient players
+    (currentRound > totalRounds) // Game completed all rounds
+  );
+
+  if (shouldShowGameOver) {
     console.log('🎉 Rendering GameOverScreen');
+    console.log('🎉 Game over conditions:', { isGameOver, currentWord, isActive, playersCount: players.length });
     return <GameOverScreen />;
+  } else if (isGameOver && !shouldShowGameOver) {
+    console.warn('⚠️ isGameOver is true but conditions not met, forcing game to continue');
+    console.warn('⚠️ Diagnostic:', { isGameOver, currentWord, isActive, playersCount: players.length });
+    // Force reset the game over state if it's incorrectly set
+    dispatch(resetGameOverState());
   }
 
   console.log('🎮 Rendering main GamePage');

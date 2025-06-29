@@ -32,7 +32,9 @@ const gameSlice = createSlice({
       const { round, nextDrawer, drawerId, wordOptions, turnOrder, gameState } = action.payload;
       console.log('🎮 Setting drawerId to:', nextDrawer || drawerId);
       
+      // CRITICAL: Completely reset game state to prevent corruption
       state.isActive = true;
+      state.isGameOver = false; // Explicitly reset game over state
       state.currentRound = round || 1;
       state.currentTurn = 1;
       state.currentTurnIndex = 0;
@@ -40,20 +42,28 @@ const gameSlice = createSlice({
       state.wordOptions = wordOptions || [];
       state.turnOrder = turnOrder || [];
       state.gameStartTime = Date.now();
-      state.isGameOver = false;
+      state.winner = null; // Reset winner
+      state.currentWord = null; // Reset current word
+      state.wordLength = 0; // Reset word length
+      state.timeRemaining = 60; // Reset timer
+      state.error = null; // Clear any errors
       
       // If we have full game state, use it
       if (gameState) {
         state.totalRounds = gameState.totalRounds || 3;
         state.scores = gameState.scores || {};
+        state.timeRemaining = gameState.settings?.drawingTime || 60;
       }
       
-      console.log('🎮 Redux state after startGame:', {
+      console.log('🎮 Redux state after startGame (full reset):', {
         isActive: state.isActive,
+        isGameOver: state.isGameOver,
         drawerId: state.drawerId,
         currentRound: state.currentRound,
         turnOrder: state.turnOrder,
-        wordOptions: state.wordOptions.length
+        wordOptions: state.wordOptions.length,
+        currentWord: state.currentWord,
+        timeRemaining: state.timeRemaining
       });
     },
     startRound: (state, action) => {
@@ -172,6 +182,14 @@ const gameSlice = createSlice({
       state.error = action.payload;
       state.loading = false;
     },
+    resetGameOverState: (state) => {
+      console.log('🔄 Forcing reset of game over state');
+      state.isGameOver = false;
+      if (!state.currentWord && state.wordOptions.length === 0) {
+        // If no word is selected and no options, the game should be active for word selection
+        state.isActive = true;
+      }
+    },
   },
 });
 
@@ -190,6 +208,7 @@ export const {
   resetGame,
   setLoading,
   setError,
+  resetGameOverState,
 } = gameSlice.actions;
 
 export default gameSlice.reducer;

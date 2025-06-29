@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { useSelector } from 'react-redux';
 
@@ -17,21 +16,51 @@ const Leaderboard = () => {
     return team === settings.teamNames[0] ? '#ff4444' : '#4444ff';
   };
 
+  // Create properly ranked leaderboard with correct tie handling
+  const rankedLeaderboard = React.useMemo(() => {
+    // Sort players by score (descending)
+    const sortedPlayers = [...players]
+      .map(player => ({
+        ...player,
+        score: scores[player.id] || 0
+      }))
+      .sort((a, b) => b.score - a.score);
+
+    // Calculate ranks with proper tie handling
+    const rankedList = [];
+    let currentRank = 1;
+
+    for (let i = 0; i < sortedPlayers.length; i++) {
+      const player = sortedPlayers[i];
+      
+      // If this isn't the first player and the score is different from previous player
+      if (i > 0 && player.score !== sortedPlayers[i - 1].score) {
+        currentRank = i + 1; // Jump to the next available rank
+      }
+      
+      rankedList.push({
+        ...player,
+        rank: currentRank
+      });
+    }
+
+    return rankedList;
+  }, [players, scores]);
+
   return (
     <div className="leaderboard">
       <h3>Leaderboard</h3>
       <div className="scores-list">
-        {leaderboard.map((entry, index) => {
-          const player = getPlayerInfo(entry.playerId);
+        {rankedLeaderboard.map((player) => {
           const teamColor = getTeamColor(player.team);
           
           return (
             <div
-              key={entry.playerId}
+              key={player.id}
               className="score-item"
               style={teamColor ? { borderLeft: `4px solid ${teamColor}` } : {}}
             >
-              <div className="rank">#{index + 1}</div>
+              <div className="rank">#{player.rank}</div>
               <div className="player-info">
                 <span className="avatar">{player.avatarUrl}</span>
                 <span className="name">{player.displayName}</span>
@@ -41,7 +70,7 @@ const Leaderboard = () => {
                   </span>
                 )}
               </div>
-              <div className="score">{entry.score || 0}</div>
+              <div className="score">{player.score || 0}</div>
             </div>
           );
         })}
