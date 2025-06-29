@@ -35,7 +35,7 @@ const ChatBox = ({ onGuessSubmit, canGuess = true }) => {
   const isRateLimited = rateLimitedUntil && Date.now() < rateLimitedUntil;
   const isDrawer = user?.id === drawerId;
   const hasGuessedCorrectly = correctGuesses.some(g => g.playerId === user?.id);
-  const shouldShowInput = canGuess && isActive && !isDrawer && !isRateLimited;
+  const shouldShowInput = canGuess && isActive && !isDrawer && !isRateLimited && !hasGuessedCorrectly;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -182,10 +182,17 @@ const ChatBox = ({ onGuessSubmit, canGuess = true }) => {
 
       {!shouldShowInput && !isDrawer && (
         <div className="guess-disabled">
-          {hasGuessedCorrectly ? "You've already guessed correctly! 🎉" : 
+          {hasGuessedCorrectly ? "You've already guessed correctly! 🎉 Watch others guess!" : 
            !isActive ? "Game not active" :
            !currentWord ? "Waiting for word selection..." : 
+           isRateLimited ? `Wait ${getTimeRemaining()}s before next guess...` :
            "You can't guess right now"}
+        </div>
+      )}
+      
+      {isDrawer && isActive && currentWord && (
+        <div className="drawer-status">
+          🎨 You're drawing! Watch the guesses and keep drawing until time runs out.
         </div>
       )}
 

@@ -5,8 +5,10 @@ const GameTimer = () => {
   const { timeRemaining, isActive, currentWord } = useSelector(state => state.game);
   const { user } = useSelector(state => state.auth);
   const { drawerId } = useSelector(state => state.game);
+  const { settings } = useSelector(state => state.room);
 
   const isDrawer = user?.id === drawerId;
+  const maxTime = settings?.drawingTime || 60; // Use dynamic drawing time
 
   const formatTime = (seconds) => {
     if (seconds < 0) return '0:00';
@@ -16,13 +18,15 @@ const GameTimer = () => {
   };
 
   const getTimerClass = () => {
-    if (timeRemaining <= 10) return 'timer urgent';
-    if (timeRemaining <= 20) return 'timer warning';
+    const warningThreshold = Math.max(10, maxTime * 0.2); // 20% of max time or 10s minimum
+    const urgentThreshold = Math.max(5, maxTime * 0.1); // 10% of max time or 5s minimum
+    
+    if (timeRemaining <= urgentThreshold) return 'timer urgent';
+    if (timeRemaining <= warningThreshold) return 'timer warning';
     return 'timer normal';
   };
 
   const getProgressPercentage = () => {
-    const maxTime = 60; // Total drawing time
     return Math.max(0, (timeRemaining / maxTime) * 100);
   };
 
@@ -48,13 +52,13 @@ const GameTimer = () => {
         />
       </div>
       
-      {timeRemaining <= 10 && (
+      {timeRemaining <= Math.max(5, maxTime * 0.1) && (
         <div className="timer-warning-text">
           Time's running out!
         </div>
       )}
       
-      {isDrawer && timeRemaining <= 20 && timeRemaining > 10 && (
+      {isDrawer && timeRemaining <= Math.max(10, maxTime * 0.2) && timeRemaining > Math.max(5, maxTime * 0.1) && (
         <div className="timer-hint">
           Keep drawing! Time is running short
         </div>

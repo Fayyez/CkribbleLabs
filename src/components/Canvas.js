@@ -67,6 +67,7 @@ const Canvas = ({ onPathUpdate, onCanvasClear }) => {
         playerId: user?.id,
         timestamp: Date.now()
       };
+      console.log('🎨 Sending complete path:', completePath);
       onPathUpdate(completePath);
     }
   }, [canDraw, isDrawing, currentWord, currentPath, dispatch, onPathUpdate, user?.id]);
@@ -235,19 +236,20 @@ const Canvas = ({ onPathUpdate, onCanvasClear }) => {
         }}
       />
       
-      {/* Canvas overlays */}
-      {!canDraw && (
+      {/* Canvas overlays - only show for specific waiting states */}
+      {!canDraw && !isActive && (
         <div className="canvas-overlay">
-          {!currentWord ? (
-            <div className="overlay-content">
-              <p>🎨 Waiting for word selection...</p>
-            </div>
-          ) : (
-            <div className="overlay-content">
-              <p>👀 Watch the drawing!</p>
-              <small>Someone else is drawing</small>
-            </div>
-          )}
+          <div className="overlay-content">
+            <p>🎮 Game not active</p>
+          </div>
+        </div>
+      )}
+
+      {!canDraw && isActive && !currentWord && (
+        <div className="canvas-overlay">
+          <div className="overlay-content">
+            <p>🎨 Waiting for word selection...</p>
+          </div>
         </div>
       )}
 

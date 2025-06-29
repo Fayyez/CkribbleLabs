@@ -57,35 +57,52 @@ const GamePage = () => {
     const initializeRoomState = async () => {
       if (!roomId || !user?.id) return;
       
-      // Always try to get fresh room state when component mounts or when we have no players
-      if (players.length === 0) {
-        try {
-          console.log('🔧 Initializing room state for GamePage (no players found)');
-          const response = await callEdgeFunction('join-room', {
-            roomId,
-            playerId: user.id,
-            action: 'get-state'
-          });
-          
-          if (response?.success && response?.room) {
-            console.log('🏠 Got room state:', response.room);
-            if (response.room.players && response.room.players.length > 0) {
-              dispatch(setPlayers(response.room.players));
-              console.log('✅ Successfully set players from room state:', response.room.players.length);
-            }
-          } else {
-            console.warn('⚠️ No room state received or invalid response');
+      // Always try to get fresh room state when component mounts
+      try {
+        console.log('🔧 Initializing room state for GamePage, current players:', players.length);
+        const response = await callEdgeFunction('join-room', {
+          roomId,
+          playerId: user.id,
+          playerData: profile ? {
+            id: user.id,
+            displayName: profile.displayName,
+            avatarUrl: profile.avatarUrl,
+            team: null,
+            joinedAt: new Date().toISOString(),
+            isCreator: false
+          } : undefined,
+          action: players.length === 0 ? 'join' : 'get-state'
+        });
+        
+        if (response?.success && response?.room) {
+          console.log('🏠 Got room state:', response.room);
+          if (response.room.players && response.room.players.length > 0) {
+            dispatch(setPlayers(response.room.players));
+            console.log('✅ Successfully set players from room state:', response.room.players.length);
           }
-        } catch (error) {
-          console.error('❌ Failed to initialize room state:', error);
+          
+          // Update settings if they're different
+          if (response.room.settings && JSON.stringify(response.room.settings) !== JSON.stringify(settings)) {
+            console.log('🔧 Updating settings from room state:', response.room.settings);
+            // You might want to dispatch an action to update settings in room slice
+          }
+        } else {
+          console.warn('⚠️ No room state received or invalid response');
         }
-      } else {
-        console.log('✅ Players already loaded:', players.length);
+      } catch (error) {
+        console.error('❌ Failed to initialize room state:', error);
       }
     };
     
+    // Initialize immediately
     initializeRoomState();
-  }, [roomId, user?.id, players.length, dispatch]);
+    
+    // Also re-initialize if players list becomes empty (connection issues)
+    if (players.length === 0) {
+      const retryTimeout = setTimeout(initializeRoomState, 2000);
+      return () => clearTimeout(retryTimeout);
+    }
+  }, [roomId, user?.id, profile, dispatch]);
 
   // Debug drawer state changes
   useEffect(() => {
@@ -231,11 +248,14 @@ const GamePage = () => {
     const channel = getChannel();
 
     channel
-      .on('broadcast', { event: 'player:join' }, (payload) => {
-        console.log('👤 Player join event received in GamePage:', payload);
-        const playerData = payload.payload || payload;
+      .on('broadcast', { event: 'player:join' }, (event) => {
+        console.log('👤 Player join event received in GamePage:', event);
+        const playerData = event.payload || event;
         if (playerData && playerData.id && !players.find(p => p.id === playerData.id)) {
+          console.log('✅ Adding new player to game:', playerData);
           dispatch(addPlayer(playerData));
+        } else {
+          console.log('👥 Player already exists or invalid data:', playerData);
         }
       })
       .on('broadcast', { event: 'player:leave' }, (payload) => {
@@ -337,7 +357,8 @@ const GamePage = () => {
         const gameData = {
           ...payload,
           turnOrder: payload.turnOrder || players.map(p => p.id),
-          currentTurnIndex: 0
+          currentTurnIndex: 0,
+          settings: payload.gameState?.settings || settings // Include settings
         };
         
         console.log('Dispatching startGame with data:', gameData);
@@ -364,7 +385,13 @@ const GamePage = () => {
         console.log('Current user ID:', user?.id);
         console.log('Is this user the drawer?', payload.drawerId === user?.id);
         
-        dispatch(startRound(payload));
+        // Enhanced payload with proper word length
+        const enhancedPayload = {
+          ...payload,
+          drawingTime: payload.drawingTime || settings?.drawingTime || 60
+        };
+        
+        dispatch(startRound(enhancedPayload));
         dispatch(setCanDraw(payload.drawerId === user?.id));
         dispatch(clearCanvas());
         dispatch(clearChat());
@@ -383,20 +410,35 @@ const GamePage = () => {
         console.log('📝 WORD SELECTED EVENT received:', event);
         const payload = event.payload || event;
         const selectedWord = payload.word || payload.selectedWord;
-        console.log('📝 Extracted word:', selectedWord, 'wordLength:', payload.wordLength);
+        const drawerId = payload.drawerId;
+        console.log('📝 Extracted word:', selectedWord, 'wordLength:', payload.wordLength, 'drawerId:', drawerId);
         
         if (selectedWord) {
           dispatch(selectWord(selectedWord));
           dispatch(setWordOptions([])); // Clear word options for all players
+          
+          // Set canvas drawing permissions
+          const canUserDraw = drawerId === user?.id;
+          console.log('🎨 Setting canvas permission - canDraw:', canUserDraw, 'for user:', user?.id);
+          dispatch(setCanDraw(canUserDraw));
+          
           console.log('📝 Word selection processed for all players');
         } else {
           console.error('❌ No word found in word:selected event payload:', payload);
         }
       })
-      .on('broadcast', { event: 'canvas:update' }, (payload) => {
-        if (payload.playerId !== user?.id) {
-          console.log('🎨 Received remote canvas update:', payload);
-          dispatch(addRemotePath(payload.path));
+      .on('broadcast', { event: 'canvas:update' }, (event) => {
+        const payload = event.payload || event;
+        console.log('🎨 Canvas update event:', event);
+        console.log('🎨 Canvas payload:', payload);
+        
+        if (payload && payload.playerId !== user?.id) {
+          console.log('🎨 Processing remote canvas update from:', payload.playerId);
+          dispatch(addRemotePath(payload));
+        } else if (payload && payload.playerId === user?.id) {
+          console.log('🎨 Ignoring own canvas update');
+        } else {
+          console.log('🎨 Invalid canvas payload:', payload);
         }
       })
       .on('broadcast', { event: 'canvas:clear' }, (payload) => {
@@ -424,12 +466,19 @@ const GamePage = () => {
           timestamp: Date.now()
         }));
       })
-      .on('broadcast', { event: 'timer:update' }, (payload) => {
-        console.log('⏰ Timer update received:', payload.timeRemaining);
-        dispatch(updateTimer(payload.timeRemaining));
+      .on('broadcast', { event: 'timer:update' }, (event) => {
+        const payload = event.payload || event;
+        console.log('⏰ Timer update received:', payload);
+        if (payload && typeof payload.timeRemaining === 'number') {
+          dispatch(updateTimer(payload.timeRemaining));
+        } else {
+          console.warn('⚠️ Invalid timer payload:', payload);
+        }
       })
-      .on('broadcast', { event: 'game:round-end' }, (payload) => {
-        console.log('🏁 ROUND END EVENT received:', payload);
+      .on('broadcast', { event: 'game:round-end' }, (event) => {
+        console.log('🏁 TURN/ROUND END EVENT received:', event);
+        const payload = event.payload || event;
+        
         dispatch(endRound(payload));
         dispatch(updateScores(payload.scores));
         
@@ -440,9 +489,20 @@ const GamePage = () => {
           timestamp: Date.now()
         }));
 
-        // If there's a next drawer, prepare for next round
+        // Show round progress
+        if (payload.isNewRound) {
+          dispatch(addMessage({
+            type: 'system',
+            text: `🎉 Round ${payload.nextRound - 1} completed! Starting Round ${payload.nextRound}`,
+            timestamp: Date.now()
+          }));
+        }
+
+        // If there's a next drawer, prepare for next turn/round
         if (!payload.isGameOver && payload.nextDrawer) {
-          console.log('🔄 Preparing next round with drawer:', payload.nextDrawer);
+          const actionType = payload.isNewRound ? 'round' : 'turn';
+          console.log(`🔄 Preparing next ${actionType} with drawer:`, payload.nextDrawer);
+          
           setTimeout(() => {
             console.log('🎲 Calling start-round to generate words for next drawer');
             // Generate words for next drawer
@@ -456,30 +516,40 @@ const GamePage = () => {
               theme: settings?.theme || 'default',
               action: 'generate_words'
             }).then(result => {
-              console.log('📦 start-round response for next round:', result);
+              console.log(`📦 start-${actionType} response:`, result);
               if (result.wordOptions) {
-                console.log('📡 Broadcasting next round start event');
-                channel.send({
-                  type: 'broadcast',
-                  event: 'game:round',
-                  payload: {
-                    drawerId: payload.nextDrawer,
-                    roundNumber: payload.nextRound,
-                    turnIndex: payload.nextTurnIndex || 0,
-                    wordOptions: result.wordOptions
-                  }
-                });
+                console.log(`📡 Broadcasting next ${actionType} start event`);
+                const channel = getChannel();
+                if (channel && channel.state === 'joined') {
+                  channel.send({
+                    type: 'broadcast',
+                    event: 'game:round',
+                    payload: {
+                      drawerId: payload.nextDrawer,
+                      roundNumber: payload.nextRound,
+                      turnIndex: payload.nextTurnIndex || 0,
+                      wordOptions: result.wordOptions,
+                      drawingTime: settings?.drawingTime || 60,
+                      isNewRound: payload.isNewRound
+                    }
+                  });
+                }
               } else {
-                console.log('❌ No wordOptions in start-round response for next round');
+                console.log(`❌ No wordOptions in start-${actionType} response`);
               }
             }).catch(error => {
-              console.error('❌ Failed to start next round:', error);
+              console.error(`❌ Failed to start next ${actionType}:`, error);
             });
-          }, 3000); // 3 second delay before next round
+          }, 3000); // 3 second delay before next turn/round
         } else if (payload.isGameOver) {
-          console.log('🎉 Game is over!');
+          console.log('🎉 Game is completely over!');
+          dispatch(addMessage({
+            type: 'system',
+            text: `🎉 Game Over! All ${payload.gameProgress?.currentRound || totalRounds} rounds completed!`,
+            timestamp: Date.now()
+          }));
         } else {
-          console.log('⚠️ Round ended but no next drawer provided');
+          console.log('⚠️ Turn ended but no next drawer provided');
         }
       })
       .on('broadcast', { event: 'game:over' }, (payload) => {
@@ -499,11 +569,11 @@ const GamePage = () => {
     };
   }, [roomId, user?.id, getChannel]);
 
-  // Handle time up
+  // Handle time up - ends current turn, not entire round
   const handleTimeUp = useCallback(async () => {
     if (!isDrawer) return;
     
-    console.log('⏰ Time ran out, ending round');
+    console.log('⏰ Time ran out, ending turn for drawer:', drawerId);
     const playerScores = correctGuesses.map(g => ({
       playerId: g.playerId,
       points: calculatePoints(g.timeTaken || 0),
@@ -511,10 +581,10 @@ const GamePage = () => {
       guessedCorrectly: true
     }));
 
-    console.log('📊 Ending round due to timeout with scores:', playerScores);
+    console.log('📊 Ending turn due to timeout with scores:', playerScores);
 
     try {
-      const roundResult = await callEdgeFunction('end-round', {
+      const turnResult = await callEdgeFunction('end-round', {
         roomId,
         currentDrawerId: drawerId,
         word: currentWord,
@@ -526,49 +596,60 @@ const GamePage = () => {
         reason: 'timeout'
       });
 
-      console.log('📦 end-round response for timeout:', roundResult);
+      console.log('📦 end-turn response for timeout:', turnResult);
       const channel = getChannel();
-      channel.send({
-        type: 'broadcast',
-        event: 'game:round-end',
-        payload: roundResult
-      });
+      if (channel && channel.state === 'joined') {
+        channel.send({
+          type: 'broadcast',
+          event: 'game:round-end',
+          payload: turnResult
+        });
+      }
     } catch (error) {
-      console.error('❌ Failed to end round on timeout:', error);
+      console.error('❌ Failed to end turn on timeout:', error);
     }
-  }, [isDrawer, roomId, currentWord, correctGuesses, calculatePoints, drawerId, currentRound, totalRounds, turnOrder, currentTurnIndex, players]);
+  }, [isDrawer, roomId, currentWord, correctGuesses, calculatePoints, drawerId, currentRound, totalRounds, turnOrder, currentTurnIndex, players, getChannel]);
 
   // Timer synchronization for drawer
   useEffect(() => {
     if (!isDrawer || !isActive || !currentWord) return;
 
+    console.log('⏰ Starting timer for drawer, initial time:', timeRemaining);
+    
     const timerInterval = setInterval(() => {
       dispatch((dispatch, getState) => {
         const currentTime = getState().game.timeRemaining;
-        const newTime = currentTime - 1;
+        const newTime = Math.max(0, currentTime - 1);
         
+        console.log('⏰ Timer tick:', currentTime, '→', newTime);
         dispatch(updateTimer(newTime));
         
         // Broadcast timer update to other players
         const channel = getChannel();
-        channel.send({
-          type: 'broadcast',
-          event: 'timer:update',
-          payload: {
-            timeRemaining: newTime
-          }
-        });
+        if (channel && channel.state === 'joined') {
+          channel.send({
+            type: 'broadcast',
+            event: 'timer:update',
+            payload: {
+              timeRemaining: newTime
+            }
+          });
+        }
         
         // Auto-end round when time runs out
         if (newTime <= 0) {
           console.log('⏰ Timer reached 0, ending round');
+          clearInterval(timerInterval); // Clear interval before ending round
           handleTimeUp();
         }
       });
     }, 1000);
 
-    return () => clearInterval(timerInterval);
-  }, [isDrawer, isActive, currentWord, roomId, handleTimeUp]);
+    return () => {
+      console.log('⏰ Clearing timer interval');
+      clearInterval(timerInterval);
+    };
+  }, [isDrawer, isActive, currentWord, getChannel, handleTimeUp]);
 
   // Handle canvas path updates
   const handlePathUpdate = useCallback((path) => {
@@ -929,6 +1010,11 @@ const GamePage = () => {
       <div className="game-header">
         <div className="round-info">
           <h2>Round {currentRound} of {totalRounds}</h2>
+          {turnOrder.length > 0 && (
+            <div className="turn-info">
+              Player {(currentTurnIndex || 0) + 1} of {turnOrder.length} drawing
+            </div>
+          )}
           <div className="timer-container">
             {isActive && <GameTimer />}
           </div>
@@ -940,10 +1026,15 @@ const GamePage = () => {
               <span className="word-label">Draw:</span>
               <span className="word-text">{currentWord}</span>
             </div>
-          ) : currentWord || wordLength > 0 ? (
+          ) : (currentWord && wordLength > 0) ? (
             <div className="word-blanks">
-              <span className="word-label">Word:</span>
-              <span className="masked-word">{maskedWord || Array(wordLength).fill('_').join(' ')}</span>
+              <span className="word-label">Word ({wordLength} letters):</span>
+              <span className="masked-word">{maskedWord}</span>
+            </div>
+          ) : wordLength > 0 ? (
+            <div className="word-blanks">
+              <span className="word-label">Word ({wordLength} letters):</span>
+              <span className="masked-word">{Array(wordLength).fill('_').join(' ')}</span>
             </div>
           ) : (
             <div className="waiting-word">
@@ -994,7 +1085,7 @@ const GamePage = () => {
           <Leaderboard />
           <ChatBox 
             onGuessSubmit={handleGuessSubmit}
-            canGuess={!isDrawer && !hasGuessedCorrectly && isActive && currentWord}
+            canGuess={true} // Always allow chat access, internal logic will handle guess restrictions
           />
         </div>
       </div>

@@ -50,9 +50,15 @@ const gameSlice = createSlice({
       
       // If we have full game state, use it
       if (gameState) {
-        state.totalRounds = gameState.totalRounds || 3;
+        state.totalRounds = gameState.totalRounds || gameState.settings?.rounds || 3;
         state.scores = gameState.scores || {};
         state.timeRemaining = gameState.settings?.drawingTime || 60;
+      }
+      
+      // Also check for settings in the payload directly
+      if (action.payload.settings) {
+        state.totalRounds = action.payload.settings.rounds || state.totalRounds;
+        state.timeRemaining = action.payload.settings.drawingTime || state.timeRemaining;
       }
       
       console.log('🎮 Redux state after startGame (full reset):', {
@@ -69,12 +75,12 @@ const gameSlice = createSlice({
     startRound: (state, action) => {
       console.log('🎯 Redux startRound action payload:', action.payload);
       const { round, roundNumber, drawerId, wordLength, drawingTime, turnIndex, wordOptions } = action.payload;
-      console.log('🎯 Setting drawerId to:', drawerId);
+      console.log('🎯 Setting drawerId to:', drawerId, 'wordLength:', wordLength);
       
       state.currentRound = round || roundNumber;
       state.drawerId = drawerId;
-      state.wordLength = wordLength;
-      state.timeRemaining = drawingTime || 60;
+      state.wordLength = wordLength || 0;
+      state.timeRemaining = drawingTime || state.timeRemaining || 60;
       state.roundStartTime = Date.now();
       state.currentWord = null;
       state.wordOptions = wordOptions || [];
@@ -86,8 +92,10 @@ const gameSlice = createSlice({
       console.log('🎯 Redux state after startRound:', {
         currentRound: state.currentRound,
         drawerId: state.drawerId,
+        wordLength: state.wordLength,
         wordOptions: state.wordOptions.length,
-        currentTurnIndex: state.currentTurnIndex
+        currentTurnIndex: state.currentTurnIndex,
+        timeRemaining: state.timeRemaining
       });
     },
     selectWord: (state, action) => {
