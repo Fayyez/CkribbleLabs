@@ -4,8 +4,6 @@ import { useDispatch, useSelector } from 'react-redux';
 import { supabase, callEdgeFunction } from '../lib/supabase';
 import { clearUser, updateProfile } from '../redux/slices/authSlice';
 
-const AVATAR_BUCKET_URL = 'https://cqrfgtidwzgvrhxcigth.supabase.co/storage/v1/object/public/avatars//';
-
 const RoomSelection = () => {
   const [roomCode, setRoomCode] = useState('');
   const [joinMethod, setJoinMethod] = useState('code'); // code or link
@@ -15,17 +13,83 @@ const RoomSelection = () => {
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileMsg, setProfileMsg] = useState('');
   const [error, setError] = useState('');
+  const [avatarError, setAvatarError] = useState('');
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const { user, profile } = useSelector((state) => state.auth);
 
+  // Get dynamic avatar bucket URL
+  const getAvatarUrl = (avatarName) => {
+    const { data } = supabase.storage.from('avatars').getPublicUrl(avatarName);
+    console.log('Avatar URL:', data.publicUrl);
+    return data.publicUrl;
+  };
+
   const fetchAvatars = async () => {
-    const { data, error } = await supabase.storage.from('avatars').list('', { limit: 100 });
-    if (data) {
-      console.log('Avatars fetched:', data);
-      setAvatars(data.filter(f => f.name.endsWith('.jpg') || f.name.endsWith('.png')));
-    } else if (error) {
-      console.error('Error fetching avatars:', error);
+    try {
+      setAvatarError('');
+      console.log('Fetching avatars from storage...');
+      
+      // First, try to list files from the avatars bucket
+      const { data, error } = await supabase.storage.from('avatars').list('', {
+        limit: 100,
+        sortBy: { column: 'name', order: 'asc' }
+      });
+      
+      if (error) {
+        console.error('Error listing avatars from storage:', error);
+        
+        // If storage fails, use fallback avatars from public folder
+        console.log('Using fallback avatars from public folder');
+        const fallbackAvatars = [
+          'default-pfp.jpg',
+          'pfp-2.jpg'
+        ];
+        
+        setAvatars(fallbackAvatars.map(name => ({ name, isPublic: true })));
+        setAvatarError('Using default avatars (storage unavailable)');
+        return;
+      }
+      
+      if (data && data.length > 0) {
+        // Filter for image files
+        const imageFiles = data.filter(file => 
+          file.name.toLowerCase().endsWith('.jpg') || 
+          file.name.toLowerCase().endsWith('.jpeg') || 
+          file.name.toLowerCase().endsWith('.png') ||
+          file.name.toLowerCase().endsWith('.gif') ||
+          file.name.toLowerCase().endsWith('.webp')
+        );
+        
+        console.log(`Found ${imageFiles.length} avatar images:`, imageFiles.map(f => f.name));
+        setAvatars(imageFiles.map(file => ({ ...file, isPublic: false })));
+        
+        if (imageFiles.length === 0) {
+          setAvatarError('No avatar images found in storage');
+        }
+      } else {
+        console.log('No files found in avatars storage, using fallback');
+        
+        // Use fallback avatars from public folder
+        const fallbackAvatars = [
+          'default-pfp.jpg',
+          'pfp-2.jpg'
+        ];
+        
+        setAvatars(fallbackAvatars.map(name => ({ name, isPublic: true })));
+        setAvatarError('No avatars in storage, using defaults');
+      }
+    } catch (err) {
+      console.error('Failed to fetch avatars:', err);
+      setAvatarError('Failed to load avatars');
+      
+      // Fallback to public folder avatars
+      const fallbackAvatars = [
+        'default-pfp.jpg',
+        'pfp-2.jpg'
+      ];
+      
+      setAvatars(fallbackAvatars.map(name => ({ name, isPublic: true })));
     }
   };
 
@@ -37,7 +101,7 @@ const RoomSelection = () => {
   // Set initial profile values
   useEffect(() => {
     setDisplayName(profile.displayName || '');
-    setSelectedAvatar(profile.avatarUrl || '');
+    setSelectedAvatar(profile.avatarUrl || '/images/default-pfp.jpg');
   }, [profile]);
 
   const handleProfileSave = async () => {
@@ -119,9 +183,17 @@ const RoomSelection = () => {
   return (
     <div className="room-selection-container">
       <header className="app-header">
-        <h1>Draw & Guess</h1>
+        <h1>Ckribble Labs</h1>
         <div className="user-info">
-          <img src={selectedAvatar || AVATAR_BUCKET_URL + 'default-pfp.jpg'} alt="avatar" className="user-avatar" style={{ width: 36, height: 36, borderRadius: '50%' }} />
+          <img 
+            src={selectedAvatar || '/images/default-pfp.jpg'} 
+            alt="avatar" 
+            className="user-avatar" 
+            style={{ width: 36, height: 36, borderRadius: '50%' }}
+            onError={(e) => {
+              e.target.src = '/images/default-pfp.jpg';
+            }}
+          />
           <span className="user-name">{displayName}</span>
           <button onClick={handleSignOut} className="btn-logout">
             Sign Out
@@ -143,17 +215,41 @@ const RoomSelection = () => {
         />
         <label style={{ fontWeight: 500 }}>Choose Avatar</label>
         <div className="avatar-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 8, margin: '12px 0' }}>
-          {avatars.map((avatar) => (
-            <img
-              key={avatar.name}
-              src={AVATAR_BUCKET_URL + avatar.name}
-              alt={avatar.name}
-              className={`avatar-option${selectedAvatar === AVATAR_BUCKET_URL + avatar.name ? ' selected' : ''}`}
-              style={{ width: 36, height: 36, borderRadius: '50%', border: selectedAvatar === AVATAR_BUCKET_URL + avatar.name ? '2px solid #ff6b6b' : '2px solid #ddd', cursor: 'pointer', boxShadow: selectedAvatar === AVATAR_BUCKET_URL + avatar.name ? '0 0 8px #ff6b6b55' : 'none' }}
-              onClick={() => setSelectedAvatar(AVATAR_BUCKET_URL + avatar.name)}
-            />
-          ))}
+          {avatars.map((avatar) => {
+            const avatarUrl = avatar.isPublic ? `/images/${avatar.name}` : getAvatarUrl(avatar.name);
+            const isSelected = selectedAvatar === avatarUrl;
+            
+            return (
+              <img
+                key={avatar.name}
+                src={avatarUrl}
+                alt={avatar.name}
+                className={`avatar-option${isSelected ? ' selected' : ''}`}
+                style={{ 
+                  width: 36, 
+                  height: 36, 
+                  borderRadius: '50%', 
+                  border: isSelected ? '2px solid #ff6b6b' : '2px solid #ddd', 
+                  cursor: 'pointer', 
+                  boxShadow: isSelected ? '0 0 8px #ff6b6b55' : 'none' 
+                }}
+                onClick={() => setSelectedAvatar(avatarUrl)}
+                onError={(e) => {
+                  // Fallback to default avatar if image fails to load
+                  e.target.src = '/images/default-pfp.jpg';
+                  if (isSelected) {
+                    setSelectedAvatar('/images/default-pfp.jpg');
+                  }
+                }}
+              />
+            );
+          })}
         </div>
+        {avatarError && (
+          <div style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
+            {avatarError}
+          </div>
+        )}
         <button
           className="btn-primary"
           style={{ width: '100%', marginTop: 8 }}

@@ -62,7 +62,7 @@ const Login = () => {
   return (
     <div className="login-container">
       <div className="login-card">
-        <h1 className="title">Draw & Guess</h1>
+        <h1 className="title">Ckribble Labs</h1>
         <p className="subtitle">Join the fun drawing game!</p>
         {successMsg && <div className="success-msg">{successMsg}</div>}
         {errorMsg && <div className="error-msg">{errorMsg}</div>}

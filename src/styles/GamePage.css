@@ -298,4 +298,121 @@
   background: linear-gradient(135deg, #0056b3, #004085);
   transform: translateY(-2px);
   box-shadow: 0 6px 20px rgba(0, 123, 255, 0.4);
+}
+
+/* Team Game Styles */
+.team-standings {
+  margin: 20px 0;
+  padding: 15px;
+  background: #f8f9fa;
+  border-radius: 10px;
+  border: 1px solid #dee2e6;
+}
+
+.team-standings h3 {
+  margin: 0 0 15px 0;
+  color: #495057;
+  font-size: 1.2rem;
+  text-align: center;
+}
+
+.team-standings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.team-standing-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 15px;
+  background: white;
+  border-radius: 8px;
+  border-left: 4px solid #ddd;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.team-standing-item.winner {
+  background: linear-gradient(135deg, #fff3cd, #ffeeba);
+  border-left-color: #ffc107;
+  box-shadow: 0 4px 8px rgba(255, 193, 7, 0.3);
+}
+
+.team-position {
+  font-weight: bold;
+  font-size: 1.2rem;
+  color: #495057;
+  min-width: 40px;
+}
+
+.team-name {
+  font-weight: bold;
+  font-size: 1.1rem;
+  color: #495057;
+  flex: 1;
+}
+
+.team-stats {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.team-total {
+  font-weight: bold;
+  font-size: 1.1rem;
+  color: #007bff;
+}
+
+.team-average {
+  font-size: 0.9rem;
+  color: #6c757d;
+}
+
+.team-players {
+  font-size: 0.8rem;
+  color: #868e96;
+}
+
+.player-standings {
+  margin-top: 20px;
+}
+
+.player-standings h3 {
+  margin: 0 0 15px 0;
+  color: #495057;
+  font-size: 1.1rem;
+  text-align: center;
+}
+
+.player-team {
+  font-size: 0.9rem;
+  color: #6c757d;
+  font-weight: normal;
+}
+
+/* Enhanced winner announcement for teams */
+.winner-announcement small {
+  font-size: 0.8rem;
+  opacity: 0.8;
+}
+
+/* Responsive adjustments for team elements */
+@media (max-width: 768px) {
+  .team-standing-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  
+  .team-stats {
+    align-items: flex-start;
+    width: 100%;
+  }
+  
+  .team-position {
+    min-width: unset;
+  }
 } 

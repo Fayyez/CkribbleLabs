@@ -300,11 +300,46 @@ const GamePage = () => {
           
           if (shouldEndGame) {
             console.log('🏁 Ending game - not enough players remaining for active game');
+            
+            // Broadcast game over event to all remaining players
+            const channel = getChannel();
             setTimeout(() => {
+              if (channel && channel.state === 'joined') {
+                channel.send({
+                  type: 'broadcast',
+                  event: 'game:over',
+                  payload: {
+                    winner: remainingPlayers[0]?.id || null,
+                    winnerType: 'individual',
+                    finalScores: scores,
+                    teamScores: {},
+                    isTeamGame: false,
+                    reason: 'insufficient_players',
+                    gameStats: {
+                      totalRounds: totalRounds || 3,
+                      totalTurns: players.length * (totalRounds || 3),
+                      completedTurns: 0,
+                      playerCount: remainingPlayers.length
+                    },
+                    timestamp: Date.now()
+                  }
+                });
+              }
+              
               dispatch(endGame({
                 winner: remainingPlayers[0]?.id || null,
+                winnerType: 'individual',
+                finalScores: scores,
+                teamScores: {},
+                isTeamGame: false,
                 reason: 'insufficient_players',
-                finalScores: scores
+                gameStats: {
+                  totalRounds: totalRounds || 3,
+                  totalTurns: players.length * (totalRounds || 3),
+                  completedTurns: 0,
+                  playerCount: remainingPlayers.length
+                },
+                timestamp: Date.now()
               }));
             }, 2000);
           } else if ((gameSettings?.isTeamGame || settings?.isTeamGame) && isActive && currentWord) {
@@ -320,12 +355,65 @@ const GamePage = () => {
             
             if (activeTeams.length <= 1) {
               console.log('🏁 Ending team game - only one team remains');
+              
+              // Calculate team scores for team game ending
+              const teamScores = {};
+              const teamNames = gameSettings?.teamNames || settings?.teamNames || ['Red', 'Blue'];
+              teamNames.forEach(teamName => {
+                const teamPlayers = remainingPlayers.filter(p => p.team === teamName);
+                const teamTotalScore = teamPlayers.reduce((sum, player) => 
+                  sum + (scores[player.id] || 0), 0
+                );
+                const teamAvgScore = teamPlayers.length > 0 ? 
+                  Math.round(teamTotalScore / teamPlayers.length) : 0;
+                
+                teamScores[teamName] = {
+                  totalScore: teamTotalScore,
+                  averageScore: teamAvgScore,
+                  playerCount: teamPlayers.length,
+                  players: teamPlayers.map(p => ({ id: p.id, name: p.displayName, score: scores[p.id] || 0 }))
+                };
+              });
+              
+              // Broadcast team game over event to all players
+              const channel = getChannel();
               setTimeout(() => {
+                if (channel && channel.state === 'joined') {
+                  channel.send({
+                    type: 'broadcast',
+                    event: 'game:over',
+                    payload: {
+                      winner: activeTeams[0] || null,
+                      winnerType: 'team',
+                      finalScores: scores,
+                      teamScores: teamScores,
+                      isTeamGame: true,
+                      reason: 'team_insufficient',
+                      gameStats: {
+                        totalRounds: totalRounds || 3,
+                        totalTurns: players.length * (totalRounds || 3),
+                        completedTurns: 0,
+                        playerCount: remainingPlayers.length
+                      },
+                      timestamp: Date.now()
+                    }
+                  });
+                }
+                
                 dispatch(endGame({
                   winner: activeTeams[0] || null,
-                  reason: 'team_insufficient',
+                  winnerType: 'team',
                   finalScores: scores,
-                  teamScores: teamCounts
+                  teamScores: teamScores,
+                  isTeamGame: true,
+                  reason: 'team_insufficient',
+                  gameStats: {
+                    totalRounds: totalRounds || 3,
+                    totalTurns: players.length * (totalRounds || 3),
+                    completedTurns: 0,
+                    playerCount: remainingPlayers.length
+                  },
+                  timestamp: Date.now()
                 }));
               }, 2000);
             }
@@ -667,9 +755,21 @@ const GamePage = () => {
           console.log('⚠️ Turn ended but no next drawer provided');
         }
       })
-      .on('broadcast', { event: 'game:over' }, (payload) => {
-        console.log('🎉 GAME OVER EVENT received:', payload);
-        dispatch(endGame(payload));
+      .on('broadcast', { event: 'game:over' }, (event) => {
+        console.log('🎉 GAME OVER EVENT received:', event);
+        const payload = event.payload || event;
+        
+        // Dispatch game end with all the necessary data for team games
+        dispatch(endGame({
+          winner: payload.winner,
+          winnerType: payload.winnerType || 'individual',
+          finalScores: payload.finalScores || scores,
+          teamScores: payload.teamScores || {},
+          isTeamGame: payload.isTeamGame || false,
+          reason: payload.reason || 'completed',
+          gameStats: payload.gameStats || {},
+          timestamp: payload.timestamp || Date.now()
+        }));
       })
       .on('broadcast', { event: 'scores:update' }, (event) => {
         console.log('📊 SCORES UPDATE EVENT received:', event);
@@ -873,6 +973,69 @@ const GamePage = () => {
               event: 'game:round-end',
               payload: roundResult
             });
+            
+            // Check if game is over and broadcast game end event
+            if (roundResult.isGameOver) {
+              console.log('🎉 [DRAWER] Broadcasting game over event to all players');
+              
+              // Calculate team scores for team games
+              const teamScores = {};
+              if (gameSettings?.isTeamGame || settings?.isTeamGame) {
+                const teamNames = gameSettings?.teamNames || settings?.teamNames || ['Red', 'Blue'];
+                teamNames.forEach(teamName => {
+                  const teamPlayers = players.filter(p => p.team === teamName);
+                  const teamTotalScore = teamPlayers.reduce((sum, player) => 
+                    sum + (currentScores[player.id] || 0), 0
+                  );
+                  const teamAvgScore = teamPlayers.length > 0 ? 
+                    Math.round(teamTotalScore / teamPlayers.length) : 0;
+                  
+                  teamScores[teamName] = {
+                    totalScore: teamTotalScore,
+                    averageScore: teamAvgScore,
+                    playerCount: teamPlayers.length,
+                    players: teamPlayers.map(p => ({ id: p.id, name: p.displayName, score: currentScores[p.id] || 0 }))
+                  };
+                });
+              }
+              
+              // Determine winner (individual or team)
+              let winner = null;
+              let winnerType = 'individual';
+              
+              if (gameSettings?.isTeamGame || settings?.isTeamGame) {
+                // Find winning team
+                const sortedTeams = Object.entries(teamScores).sort(([,a], [,b]) => b.totalScore - a.totalScore);
+                winner = sortedTeams[0]?.[0] || null;
+                winnerType = 'team';
+              } else {
+                // Find individual winner
+                const sortedPlayers = Object.entries(currentScores).sort(([,a], [,b]) => b - a);
+                winner = sortedPlayers[0]?.[0] || null;
+              }
+              
+              setTimeout(() => {
+                channel.send({
+                  type: 'broadcast',
+                  event: 'game:over',
+                  payload: {
+                    winner,
+                    winnerType,
+                    finalScores: currentScores,
+                    teamScores: teamScores,
+                    isTeamGame: gameSettings?.isTeamGame || settings?.isTeamGame,
+                    reason: 'completed',
+                    gameStats: {
+                      totalRounds: roundResult.gameProgress?.totalRounds || totalRounds,
+                      totalTurns: roundResult.gameProgress?.totalTurns || (players.length * totalRounds),
+                      completedTurns: roundResult.gameProgress?.completedTurns || 0,
+                      playerCount: players.length
+                    },
+                    timestamp: Date.now()
+                  }
+                });
+              }, 1000);
+            }
           }
         }).catch(error => {
           console.error('❌ [DRAWER] Failed to end round:', error);
@@ -1354,18 +1517,42 @@ const GamePage = () => {
 const GameOverScreen = () => {
   const navigate = useNavigate();
   const dispatch = useDispatch();
-  const { winner, teamScores, scores, settings: gameSettings } = useSelector(state => state.game);
+  const { 
+    winner, 
+    teamScores, 
+    scores, 
+    settings: gameSettings,
+    winnerType,
+    isTeamGame: gameIsTeamGame,
+    finalScores
+  } = useSelector(state => state.game);
   const { players, settings, roomId } = useSelector(state => state.room);
   const { user } = useSelector(state => state.auth);
+
+  // Determine if this is a team game
+  const isTeamGame = gameIsTeamGame || gameSettings?.isTeamGame || settings?.isTeamGame;
+  const actualScores = finalScores || scores;
 
   const sortedPlayers = useMemo(() => {
     return players
       .map(player => ({
         ...player,
-        score: scores[player.id] || 0
+        score: actualScores[player.id] || 0
       }))
       .sort((a, b) => b.score - a.score);
-  }, [players, scores]);
+  }, [players, actualScores]);
+
+  // Sort teams by total score for team games
+  const sortedTeams = useMemo(() => {
+    if (!isTeamGame || !teamScores) return [];
+    
+    return Object.entries(teamScores)
+      .map(([teamName, teamData]) => ({
+        name: teamName,
+        ...teamData
+      }))
+      .sort((a, b) => b.totalScore - a.totalScore);
+  }, [isTeamGame, teamScores]);
 
   // Clean up room when game over screen is mounted
   useEffect(() => {
@@ -1376,11 +1563,11 @@ const GameOverScreen = () => {
           await callEdgeFunction('end-game', {
             roomId,
             winner,
-            finalScores: scores,
+            finalScores: actualScores,
             reason: 'completed',
             gameStats: {
-                          totalRounds: gameSettings?.rounds || settings?.rounds || 0,
-            totalTurns: players.length * (gameSettings?.rounds || settings?.rounds || 0),
+              totalRounds: gameSettings?.rounds || settings?.rounds || 0,
+              totalTurns: players.length * (gameSettings?.rounds || settings?.rounds || 0),
               gameDuration: Date.now() - (Date.now() - 300000), // Approximate
               playerCount: players.length
             }
@@ -1406,37 +1593,81 @@ const GameOverScreen = () => {
         <h1>🎉 Game Over! 🎉</h1>
         
         <div className="final-standings">
-          <h2>Final Standings</h2>
+          <h2>Final Results</h2>
+          
+          {/* Winner Announcement */}
           <div className="winner-announcement">
             <div className="winner-crown">👑</div>
-            <div className="winner-name">{sortedPlayers[0]?.displayName || 'Unknown'}</div>
-            <div className="winner-score">{sortedPlayers[0]?.score || 0} points</div>
+            {isTeamGame && winnerType === 'team' ? (
+              <>
+                <div className="winner-name">Team {winner || 'Unknown'} Wins!</div>
+                <div className="winner-score">
+                  {sortedTeams[0]?.totalScore || 0} total points
+                  <br />
+                  <small>({sortedTeams[0]?.averageScore || 0} avg per player)</small>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="winner-name">{sortedPlayers[0]?.displayName || 'Unknown'}</div>
+                <div className="winner-score">{sortedPlayers[0]?.score || 0} points</div>
+              </>
+            )}
           </div>
-          
-          <div className="standings-list">
-            {sortedPlayers.map((player, index) => (
-              <div key={player.id} className={`standing-item ${index === 0 ? 'winner' : ''}`}>
-                <span className="position">#{index + 1}</span>
-                <span className="player-avatar">
-                  {player.avatarUrl && !player.avatarUrl.includes('🤷') ? (
-                    <img 
-                      src={player.avatarUrl} 
-                      alt={player.displayName}
-                      className="avatar-image"
-                      onError={(e) => {
-                        e.target.style.display = 'none';
-                        e.target.nextSibling.style.display = 'inline';
-                      }}
-                    />
-                  ) : null}
-                  <span className={player.avatarUrl && !player.avatarUrl.includes('🤷') ? 'avatar-fallback hidden' : 'avatar-fallback'}>
-                    🤷
-                  </span>
-                </span>
-                <span className="player-name">{player.displayName}</span>
-                <span className="player-score">{player.score || 0} pts</span>
+
+          {/* Team Standings for Team Games */}
+          {isTeamGame && sortedTeams.length > 0 && (
+            <div className="team-standings">
+              <h3>Team Results</h3>
+              <div className="team-standings-list">
+                {sortedTeams.map((team, index) => (
+                  <div key={team.name} className={`team-standing-item ${index === 0 ? 'winner' : ''}`}>
+                    <span className="team-position">#{index + 1}</span>
+                    <span className="team-name">Team {team.name}</span>
+                    <div className="team-stats">
+                      <span className="team-total">{team.totalScore} total</span>
+                      <span className="team-average">({team.averageScore} avg)</span>
+                      <span className="team-players">{team.playerCount} players</span>
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
+          )}
+          
+          {/* Individual Player Standings */}
+          <div className="player-standings">
+            <h3>{isTeamGame ? 'Individual Scores' : 'Final Standings'}</h3>
+            <div className="standings-list">
+              {sortedPlayers.map((player, index) => (
+                <div key={player.id} className={`standing-item ${index === 0 && !isTeamGame ? 'winner' : ''}`}>
+                  <span className="position">#{index + 1}</span>
+                  <span className="player-avatar">
+                    {player.avatarUrl && !player.avatarUrl.includes('🤷') ? (
+                      <img 
+                        src={player.avatarUrl} 
+                        alt={player.displayName}
+                        className="avatar-image"
+                        onError={(e) => {
+                          e.target.style.display = 'none';
+                          e.target.nextSibling.style.display = 'inline';
+                        }}
+                      />
+                    ) : null}
+                    <span className={player.avatarUrl && !player.avatarUrl.includes('🤷') ? 'avatar-fallback hidden' : 'avatar-fallback'}>
+                      🤷
+                    </span>
+                  </span>
+                  <span className="player-name">
+                    {player.displayName}
+                    {isTeamGame && player.team && (
+                      <span className="player-team"> (Team {player.team})</span>
+                    )}
+                  </span>
+                  <span className="player-score">{player.score || 0} pts</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
