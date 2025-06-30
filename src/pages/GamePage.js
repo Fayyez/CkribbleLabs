@@ -60,6 +60,84 @@ const GamePage = () => {
   
   // Add state for correct guess notification
   const [showCorrectGuess, setShowCorrectGuess] = useState(false);
+
+  // Helper function to get or create channel
+  const getChannel = useCallback(() => {
+    if (!channelRef.current) {
+      channelRef.current = supabase.channel(`room:${roomId}`);
+    }
+    return channelRef.current;
+  }, [roomId]);
+  
+  // Helper function to properly end the game with authoritative cleanup
+  const endGameAuthoritative = useCallback(async (gameEndData) => {
+    console.log('🏁 [AUTHORITATIVE] Ending game with data:', gameEndData);
+    
+    try {
+      // Call the end-game function first to clean up the room
+      const endGameResult = await callEdgeFunction('end-game', {
+        roomId,
+        winner: gameEndData.winner,
+        winnerType: gameEndData.winnerType || 'individual',
+        finalScores: gameEndData.finalScores || scores,
+        teamScores: gameEndData.teamScores || {},
+        isTeamGame: gameEndData.isTeamGame || false,
+        reason: gameEndData.reason || 'completed',
+        gameStats: gameEndData.gameStats || {
+          totalRounds: totalRounds || 3,
+          totalTurns: players.length * (totalRounds || 3),
+          completedTurns: 0,
+          playerCount: players.length
+        }
+      });
+
+      console.log('✅ [AUTHORITATIVE] End-game function completed:', endGameResult);
+
+      // Now broadcast the authoritative game over event to all players
+      const channel = getChannel();
+      if (channel && channel.state === 'joined') {
+        const authoritativeGameOverData = {
+          ...gameEndData,
+          ...endGameResult, // Include any data from the end-game function
+          timestamp: Date.now(),
+          isAuthoritative: true
+        };
+
+        console.log('📡 [AUTHORITATIVE] Broadcasting game over to all players:', authoritativeGameOverData);
+        
+        channel.send({
+          type: 'broadcast',
+          event: 'game:over',
+          payload: authoritativeGameOverData
+        });
+      }
+
+      // Update local state
+      dispatch(endGame(gameEndData));
+
+      return endGameResult;
+    } catch (error) {
+      console.error('❌ [AUTHORITATIVE] Failed to end game:', error);
+      
+      // Fallback: still broadcast the game over event even if end-game function fails
+      const channel = getChannel();
+      if (channel && channel.state === 'joined') {
+        channel.send({
+          type: 'broadcast',
+          event: 'game:over',
+          payload: {
+            ...gameEndData,
+            timestamp: Date.now(),
+            isAuthoritative: true,
+            error: 'cleanup_failed'
+          }
+        });
+      }
+      
+      dispatch(endGame(gameEndData));
+      throw error;
+    }
+  }, [roomId, scores, totalRounds, players.length, dispatch, getChannel]);
   
   // Initialize room state if needed
   useEffect(() => {
@@ -165,14 +243,6 @@ const GamePage = () => {
     const timeFactor = Math.max(0, (60 - timeTaken) / 60);
     return Math.round(maxPoints * timeFactor);
   }, []);
-
-  // Helper function to get or create channel
-  const getChannel = useCallback(() => {
-    if (!channelRef.current) {
-      channelRef.current = supabase.channel(`room:${roomId}`);
-    }
-    return channelRef.current;
-  }, [roomId]);
 
   // State consistency monitor and auto-recovery
   useEffect(() => {
@@ -301,32 +371,9 @@ const GamePage = () => {
           if (shouldEndGame) {
             console.log('🏁 Ending game - not enough players remaining for active game');
             
-            // Broadcast game over event to all remaining players
-            const channel = getChannel();
+            // Use authoritative game ending
             setTimeout(() => {
-              if (channel && channel.state === 'joined') {
-                channel.send({
-                  type: 'broadcast',
-                  event: 'game:over',
-                  payload: {
-                    winner: remainingPlayers[0]?.id || null,
-                    winnerType: 'individual',
-                    finalScores: scores,
-                    teamScores: {},
-                    isTeamGame: false,
-                    reason: 'insufficient_players',
-                    gameStats: {
-                      totalRounds: totalRounds || 3,
-                      totalTurns: players.length * (totalRounds || 3),
-                      completedTurns: 0,
-                      playerCount: remainingPlayers.length
-                    },
-                    timestamp: Date.now()
-                  }
-                });
-              }
-              
-              dispatch(endGame({
+              endGameAuthoritative({
                 winner: remainingPlayers[0]?.id || null,
                 winnerType: 'individual',
                 finalScores: scores,
@@ -340,7 +387,9 @@ const GamePage = () => {
                   playerCount: remainingPlayers.length
                 },
                 timestamp: Date.now()
-              }));
+              }).catch(error => {
+                console.error('❌ Failed to end game authoritatively:', error);
+              });
             }, 2000);
           } else if ((gameSettings?.isTeamGame || settings?.isTeamGame) && isActive && currentWord) {
             // For team games, check if entire team left
@@ -375,32 +424,9 @@ const GamePage = () => {
                 };
               });
               
-              // Broadcast team game over event to all players
-              const channel = getChannel();
+              // Use authoritative team game ending
               setTimeout(() => {
-                if (channel && channel.state === 'joined') {
-                  channel.send({
-                    type: 'broadcast',
-                    event: 'game:over',
-                    payload: {
-                      winner: activeTeams[0] || null,
-                      winnerType: 'team',
-                      finalScores: scores,
-                      teamScores: teamScores,
-                      isTeamGame: true,
-                      reason: 'team_insufficient',
-                      gameStats: {
-                        totalRounds: totalRounds || 3,
-                        totalTurns: players.length * (totalRounds || 3),
-                        completedTurns: 0,
-                        playerCount: remainingPlayers.length
-                      },
-                      timestamp: Date.now()
-                    }
-                  });
-                }
-                
-                dispatch(endGame({
+                endGameAuthoritative({
                   winner: activeTeams[0] || null,
                   winnerType: 'team',
                   finalScores: scores,
@@ -414,7 +440,9 @@ const GamePage = () => {
                     playerCount: remainingPlayers.length
                   },
                   timestamp: Date.now()
-                }));
+                }).catch(error => {
+                  console.error('❌ Failed to end team game authoritatively:', error);
+                });
               }, 2000);
             }
           } else {
@@ -598,19 +626,24 @@ const GamePage = () => {
         
         // Only the drawer manages individual score updates (prevent duplication)
         if (payload.points && payload.playerId && isDrawer) {
-          console.log('📊 [DRAWER] Updating individual score for correct guess:', payload.playerId, '+', payload.points);
-          const updatedScores = { ...scores };
-          updatedScores[payload.playerId] = (updatedScores[payload.playerId] || 0) + payload.points;
-          dispatch(updateScores(updatedScores));
+          console.log('📊 [DRAWER] Adding points for correct guess:', payload.playerId, '+', payload.points);
           
-          // Broadcast score update immediately to all players (non-authoritative, just for real-time feedback)
+          // Use incremental score update for correct guesses
+          dispatch(updateScores({
+            scores: { [payload.playerId]: payload.points },
+            incremental: true,
+            source: 'correct_guess_local'
+          }));
+          
+          // Broadcast incremental score update to all players for real-time feedback
           const channel = getChannel();
           if (channel && channel.state === 'joined') {
             channel.send({
               type: 'broadcast',
               event: 'scores:update',
               payload: {
-                scores: updatedScores,
+                scores: { [payload.playerId]: payload.points },
+                incremental: true,
                 source: 'correct_guess_realtime',
                 timestamp: Date.now(),
                 isAuthoritative: false // Mark as non-authoritative to prevent conflicts
@@ -655,7 +688,11 @@ const GamePage = () => {
         // Update scores for all players
         if (payload.scores) {
           console.log('📊 Updating scores from round end:', payload.scores);
-          dispatch(updateScores(payload.scores));
+          dispatch(updateScores({
+            scores: payload.scores,
+            incremental: false,
+            source: 'authoritative'
+          }));
         }
         
         // Show the word to everyone
@@ -759,17 +796,24 @@ const GamePage = () => {
         console.log('🎉 GAME OVER EVENT received:', event);
         const payload = event.payload || event;
         
-        // Dispatch game end with all the necessary data for team games
-        dispatch(endGame({
-          winner: payload.winner,
-          winnerType: payload.winnerType || 'individual',
-          finalScores: payload.finalScores || scores,
-          teamScores: payload.teamScores || {},
-          isTeamGame: payload.isTeamGame || false,
-          reason: payload.reason || 'completed',
-          gameStats: payload.gameStats || {},
-          timestamp: payload.timestamp || Date.now()
-        }));
+        // Only accept authoritative game over events to prevent race conditions
+        if (payload.isAuthoritative) {
+          console.log('✅ Processing authoritative game over event');
+          
+          // Dispatch game end with all the necessary data for team games
+          dispatch(endGame({
+            winner: payload.winner,
+            winnerType: payload.winnerType || 'individual',
+            finalScores: payload.finalScores || scores,
+            teamScores: payload.teamScores || {},
+            isTeamGame: payload.isTeamGame || false,
+            reason: payload.reason || 'completed',
+            gameStats: payload.gameStats || {},
+            timestamp: payload.timestamp || Date.now()
+          }));
+        } else {
+          console.warn('⚠️ Ignoring non-authoritative game over event:', payload);
+        }
       })
       .on('broadcast', { event: 'scores:update' }, (event) => {
         console.log('📊 SCORES UPDATE EVENT received:', event);
@@ -778,6 +822,7 @@ const GamePage = () => {
         if (payload.scores && typeof payload.scores === 'object') {
           console.log('📊 Score update details:', {
             source: payload.source,
+            incremental: payload.incremental,
             isAuthoritative: payload.isAuthoritative,
             isDrawer: isDrawer,
             currentScores: scores,
@@ -785,13 +830,21 @@ const GamePage = () => {
           });
           
           // Apply updates based on authority and role
-          if (payload.isAuthoritative) {
+          if (payload.isAuthoritative || payload.source === 'authoritative') {
             // Always apply authoritative updates (like turn end)
-            dispatch(updateScores(payload.scores));
+            dispatch(updateScores({
+              scores: payload.scores,
+              incremental: payload.incremental || false,
+              source: 'authoritative'
+            }));
             console.log('✅ Applied authoritative score update');
           } else if (!isDrawer && payload.source === 'correct_guess_realtime') {
             // Non-drawers apply real-time guess updates for immediate feedback
-            dispatch(updateScores(payload.scores));
+            dispatch(updateScores({
+              scores: payload.scores,
+              incremental: payload.incremental || false,
+              source: payload.source
+            }));
             console.log('✅ Applied real-time guess update for non-drawer');
           } else {
             console.log('⏭️ Skipped non-authoritative update:', {
@@ -920,37 +973,42 @@ const GamePage = () => {
 
         console.log('📊 [DRAWER] Ending turn with scores:', playerScores);
 
-        // Calculate final scores - scores for correct guesses should already be applied
-        const currentScores = { ...scores }; // Start with current scores (already includes correct guess points)
-        
-        // Only add drawer points (guessers' points were already added when they guessed correctly)
+        // Add drawer points incrementally to current scores
         const drawerPoints = Math.round(50 * (currentCorrectGuesses / totalGuessers));
-        currentScores[drawerId] = (currentScores[drawerId] || 0) + drawerPoints;
         
         console.log('📊 [DRAWER] Turn end score calculation:', {
-          currentScoresBeforeDrawer: scores,
+          currentScores: scores,
           drawerPoints,
-          finalScores: currentScores
+          drawerId
         });
         
-        console.log('📊 [DRAWER] Broadcasting final turn scores:', currentScores);
+        // Update drawer points locally using incremental update
+        dispatch(updateScores({
+          scores: { [drawerId]: drawerPoints },
+          incremental: true,
+          source: 'drawer_points_local'
+        }));
         
-        // Broadcast updated scores immediately to ALL players
+        // Get the updated scores after adding drawer points
+        const finalScores = { ...scores };
+        finalScores[drawerId] = (finalScores[drawerId] || 0) + drawerPoints;
+        
+        console.log('📊 [DRAWER] Broadcasting final turn scores as authoritative:', finalScores);
+        
+        // Broadcast authoritative final scores to ALL players
         const channel = getChannel();
         if (channel && channel.state === 'joined') {
           channel.send({
             type: 'broadcast',
             event: 'scores:update',
             payload: {
-              scores: currentScores,
-              source: 'turn_end_final',
+              scores: finalScores,
+              incremental: false,
+              source: 'authoritative',
               timestamp: Date.now(),
               isAuthoritative: true // Mark this as the authoritative score update
             }
           });
-          
-          // Also update local state immediately
-          dispatch(updateScores(currentScores));
         } else {
           console.error('❌ [DRAWER] Channel not available for score broadcasting');
         }
@@ -985,7 +1043,7 @@ const GamePage = () => {
                 teamNames.forEach(teamName => {
                   const teamPlayers = players.filter(p => p.team === teamName);
                   const teamTotalScore = teamPlayers.reduce((sum, player) => 
-                    sum + (currentScores[player.id] || 0), 0
+                    sum + (finalScores[player.id] || 0), 0
                   );
                   const teamAvgScore = teamPlayers.length > 0 ? 
                     Math.round(teamTotalScore / teamPlayers.length) : 0;
@@ -994,7 +1052,7 @@ const GamePage = () => {
                     totalScore: teamTotalScore,
                     averageScore: teamAvgScore,
                     playerCount: teamPlayers.length,
-                    players: teamPlayers.map(p => ({ id: p.id, name: p.displayName, score: currentScores[p.id] || 0 }))
+                    players: teamPlayers.map(p => ({ id: p.id, name: p.displayName, score: finalScores[p.id] || 0 }))
                   };
                 });
               }
@@ -1010,29 +1068,28 @@ const GamePage = () => {
                 winnerType = 'team';
               } else {
                 // Find individual winner
-                const sortedPlayers = Object.entries(currentScores).sort(([,a], [,b]) => b - a);
+                const sortedPlayers = Object.entries(finalScores).sort(([,a], [,b]) => b - a);
                 winner = sortedPlayers[0]?.[0] || null;
               }
               
               setTimeout(() => {
-                channel.send({
-                  type: 'broadcast',
-                  event: 'game:over',
-                  payload: {
-                    winner,
-                    winnerType,
-                    finalScores: currentScores,
-                    teamScores: teamScores,
-                    isTeamGame: gameSettings?.isTeamGame || settings?.isTeamGame,
-                    reason: 'completed',
-                    gameStats: {
-                      totalRounds: roundResult.gameProgress?.totalRounds || totalRounds,
-                      totalTurns: roundResult.gameProgress?.totalTurns || (players.length * totalRounds),
-                      completedTurns: roundResult.gameProgress?.completedTurns || 0,
-                      playerCount: players.length
-                    },
-                    timestamp: Date.now()
-                  }
+                // Use authoritative game ending for completed game
+                endGameAuthoritative({
+                  winner,
+                  winnerType,
+                  finalScores: finalScores,
+                  teamScores: teamScores,
+                  isTeamGame: gameSettings?.isTeamGame || settings?.isTeamGame,
+                  reason: 'completed',
+                  gameStats: {
+                    totalRounds: roundResult.gameProgress?.totalRounds || totalRounds,
+                    totalTurns: roundResult.gameProgress?.totalTurns || (players.length * totalRounds),
+                    completedTurns: roundResult.gameProgress?.completedTurns || 0,
+                    playerCount: players.length
+                  },
+                  timestamp: Date.now()
+                }).catch(error => {
+                  console.error('❌ Failed to end completed game authoritatively:', error);
                 });
               }, 1000);
             }
@@ -1554,34 +1611,9 @@ const GameOverScreen = () => {
       .sort((a, b) => b.totalScore - a.totalScore);
   }, [isTeamGame, teamScores]);
 
-  // Clean up room when game over screen is mounted
-  useEffect(() => {
-    const cleanupGame = async () => {
-      if (roomId && user?.id) {
-        try {
-          console.log('🧹 Cleaning up game after completion');
-          await callEdgeFunction('end-game', {
-            roomId,
-            winner,
-            finalScores: actualScores,
-            reason: 'completed',
-            gameStats: {
-              totalRounds: gameSettings?.rounds || settings?.rounds || 0,
-              totalTurns: players.length * (gameSettings?.rounds || settings?.rounds || 0),
-              gameDuration: Date.now() - (Date.now() - 300000), // Approximate
-              playerCount: players.length
-            }
-          });
-        } catch (error) {
-          console.error('Error cleaning up game:', error);
-        }
-      }
-    };
-
-    // Clean up after a short delay to allow players to see results
-    const timeoutId = setTimeout(cleanupGame, 5000);
-    return () => clearTimeout(timeoutId);
-  }, [roomId, user?.id, winner, scores, settings, players.length]);
+  // Note: Game cleanup is now handled authoritatively when the game ends,
+  // not when the GameOverScreen mounts. This prevents race conditions and
+  // ensures all players see consistent game end state.
 
   const handlePlayAgain = () => {
     navigate('/');

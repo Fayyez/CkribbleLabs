@@ -204,12 +204,25 @@ const WaitingRoom = () => {
         throw new Error(response.error || 'Failed to start game');
       }
 
+      // Use the validated settings from the start-game response to ensure consistency
+      const validatedSettings = response.gameState?.settings || {
+        rounds: settings.rounds,
+        drawingTime: settings.drawingTime,
+        isTeamGame: settings.isTeamGame,
+        teamNames: settings.teamNames || [],
+        theme: settings.isThemedGame ? settings.theme : 'default',
+        isThemedGame: settings.isThemedGame,
+        maxPlayers: settings.maxPlayers || 22,
+        maxWordLength: settings.maxWordLength
+      };
+
       // Create a dedicated channel for broadcasting game events
       const gameChannel = supabase.channel(`room:${roomId}`);
       
       try {
         // First broadcast the game start event
         logInfo('Broadcasting game start event');
+        
         await gameChannel.send({
           type: 'broadcast',
           event: 'game:start',
@@ -224,19 +237,10 @@ const WaitingRoom = () => {
             message: response.message,
             isActive: true,
             currentRound: response.round || 1,
-            totalRounds: settings.rounds,
-            timeRemaining: settings.drawingTime,
-            // Explicitly include all settings for all players
-            settings: {
-              rounds: settings.rounds,
-              drawingTime: settings.drawingTime,
-              isTeamGame: settings.isTeamGame,
-              teamNames: settings.teamNames || [],
-              theme: settings.theme,
-              isThemedGame: settings.isThemedGame,
-              maxPlayers: settings.maxPlayers || 22,
-              maxWordLength: settings.maxWordLength
-            },
+            totalRounds: validatedSettings.rounds,
+            timeRemaining: validatedSettings.drawingTime,
+            // Use the exact settings returned by the start-game function
+            settings: validatedSettings,
             players: players // Include players list for state consistency
           }
         });
@@ -261,7 +265,7 @@ const WaitingRoom = () => {
                 roundNumber: firstRound,
                 turnIndex: 0,
                 wordOptions: firstWordOptions,
-                timeRemaining: settings.drawingTime,
+                timeRemaining: validatedSettings.drawingTime,
                 turnOrder: firstTurnOrder
               }
             });
@@ -272,12 +276,12 @@ const WaitingRoom = () => {
         // Continue anyway - the game state is still valid
       }
 
-      // Dispatch enhanced game start data
+      // Dispatch enhanced game start data using the same validated settings
       dispatch(startGame({
         isActive: true,
         currentRound: response.round || 1,
         currentTurn: 1,
-        totalRounds: settings.rounds,
+        totalRounds: validatedSettings.rounds,
         drawerId: response.nextDrawer,
         wordOptions: response.wordOptions || [],
         usedWords: [],
@@ -285,7 +289,8 @@ const WaitingRoom = () => {
         leaderboard: [],
         turnOrder: response.gameState?.turnOrder || players.map(p => p.id),
         gameStartTime: Date.now(),
-        timeRemaining: settings.drawingTime
+        timeRemaining: validatedSettings.drawingTime,
+        settings: validatedSettings
       }));
 
       logInfo('Navigating to game page');

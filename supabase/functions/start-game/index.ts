@@ -270,7 +270,8 @@ serve(async (req) => {
         teamNames: settings.teamNames || [],
         theme: theme,
         isThemedGame: settings.isThemedGame,
-        maxPlayers: settings.maxPlayers || 22
+        maxPlayers: settings.maxPlayers || 22,
+        maxWordLength: settings.maxWordLength
       },
       players: players.map(player => ({
         ...player,

@@ -172,7 +172,11 @@ const gameSlice = createSlice({
     },
     updateScores: (state, action) => {
       // Enhanced score update with validation and logging
-      const newScores = action.payload;
+      const payload = action.payload;
+      
+      // Handle both absolute and incremental score updates
+      const { scores: newScores, incremental = false, source = 'unknown' } = 
+        typeof payload === 'object' && payload.hasOwnProperty('scores') ? payload : { scores: payload };
       
       // Validate that payload contains valid scores
       if (!newScores || typeof newScores !== 'object') {
@@ -184,15 +188,43 @@ const gameSlice = createSlice({
       const validatedScores = {};
       Object.entries(newScores).forEach(([playerId, score]) => {
         if (typeof score === 'number' && !isNaN(score) && score >= 0) {
-          validatedScores[playerId] = score;
+          if (incremental) {
+            // For incremental updates, add to existing score
+            validatedScores[playerId] = (state.scores[playerId] || 0) + score;
+          } else {
+            // For absolute updates, use the provided score
+            validatedScores[playerId] = score;
+          }
         } else {
           console.warn('⚠️ Invalid score for player', playerId, ':', score);
         }
       });
       
-      console.log('📊 Updating scores:', validatedScores);
+      console.log('📊 Updating scores:', {
+        source,
+        incremental,
+        newScores: validatedScores,
+        previousScores: state.scores
+      });
       
-      state.scores = { ...state.scores, ...validatedScores };
+      // Merge with existing scores, ensuring no scores decrease unless explicitly set
+      const mergedScores = { ...state.scores };
+      Object.entries(validatedScores).forEach(([playerId, score]) => {
+        // Only update if the new score is higher than current score (prevents overwrites with stale data)
+        // Unless it's an authoritative update (like turn end)
+        if (source === 'authoritative' || score >= (mergedScores[playerId] || 0)) {
+          mergedScores[playerId] = score;
+        } else {
+          console.warn('⚠️ Ignoring score update that would decrease score:', {
+            playerId,
+            currentScore: mergedScores[playerId],
+            newScore: score,
+            source
+          });
+        }
+      });
+      
+      state.scores = mergedScores;
       state.leaderboard = Object.entries(state.scores)
         .map(([playerId, score]) => ({ playerId, score }))
         .sort((a, b) => b.score - a.score);
