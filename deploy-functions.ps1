@@ -44,6 +44,7 @@ function Test-SupabaseCLI {
         return $false
     }
 }
+}
 
 # Function to check if we're in a Supabase project
 function Test-SupabaseProject {
