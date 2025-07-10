@@ -1,4 +1,3 @@
-
 import { createSlice } from '@reduxjs/toolkit';
 
 const initialState = {
@@ -42,15 +41,20 @@ const chatSlice = createSlice({
       state.reactions = state.reactions.filter(r => now - r.timestamp < 5000);
     },
     addCorrectGuess: (state, action) => {
+      console.log('🔥 Redux addCorrectGuess called with:', action.payload);
       const { playerId, playerName, timeTaken } = action.payload;
       if (!state.correctGuesses.find(g => g.playerId === playerId)) {
+        console.log('✅ Adding new correct guess for player:', playerId, playerName);
         state.correctGuesses.push({
           playerId,
           playerName,
           timeTaken,
           timestamp: Date.now(),
         });
+      } else {
+        console.log('⚠️ Correct guess already exists for player:', playerId);
       }
+      console.log('📊 CorrectGuesses array after update:', state.correctGuesses);
     },
     setCurrentGuess: (state, action) => {
       state.currentGuess = action.payload;
@@ -69,12 +73,15 @@ const chatSlice = createSlice({
       state.isGuessClose = false;
     },
     clearChat: (state) => {
+      console.log('🧹 Redux clearChat called - clearing all chat data');
+      console.log('📊 CorrectGuesses before clear:', state.correctGuesses);
       state.messages = [];
       state.reactions = [];
       state.correctGuesses = [];
       state.currentGuess = '';
       state.isGuessCorrect = false;
       state.isGuessClose = false;
+      console.log('✅ Chat cleared successfully');
     },
     clearCorrectGuesses: (state) => {
       state.correctGuesses = [];

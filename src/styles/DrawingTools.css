@@ -1,0 +1,179 @@
+/* DrawingTools Component Styles */
+
+.drawing-tools-compact {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #f8f9fa;
+  border-top: 1px solid #e9ecef;
+  flex-wrap: wrap;
+}
+
+.tool-group {
+  display: flex;
+  gap: 4px;
+}
+
+.tool-btn {
+  padding: 6px 8px;
+  border: 1px solid #dee2e6;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+
+.tool-btn:hover {
+  background: #e9ecef;
+}
+
+.tool-btn.active {
+  background: #007bff;
+  color: white;
+  border-color: #007bff;
+}
+
+.color-group {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+
+.color-btn-compact {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #dee2e6;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.color-btn-compact:hover {
+  transform: scale(1.1);
+}
+
+.color-btn-compact.active {
+  border-color: #333;
+  transform: scale(1.1);
+  box-shadow: 0 0 0 1px #333;
+}
+
+.size-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.size-label {
+  font-size: 11px;
+  color: #6c757d;
+  font-weight: 500;
+}
+
+.size-buttons {
+  display: flex;
+  gap: 2px;
+}
+
+.size-btn {
+  padding: 2px 6px;
+  border: 1px solid #dee2e6;
+  background: white;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  line-height: 1;
+}
+
+.size-btn:hover {
+  background: #e9ecef;
+}
+
+.size-btn.active {
+  background: #007bff;
+  color: white;
+  border-color: #007bff;
+}
+
+.size-slider-compact {
+  width: 60px;
+  height: 4px;
+  background: #dee2e6;
+  border-radius: 2px;
+  appearance: none;
+  cursor: pointer;
+}
+
+.size-slider-compact::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: #007bff;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.size-slider-compact::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: #007bff;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+.size-display {
+  font-size: 10px;
+  color: #6c757d;
+  font-weight: 500;
+  min-width: 16px;
+  text-align: center;
+}
+
+.action-group {
+  display: flex;
+  gap: 4px;
+}
+
+.action-btn-compact {
+  padding: 4px 8px;
+  border: 1px solid #dee2e6;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s ease;
+}
+
+.action-btn-compact:hover {
+  background: #e9ecef;
+}
+
+.action-btn-compact.danger {
+  color: #dc3545;
+  border-color: #dc3545;
+}
+
+.action-btn-compact.danger:hover {
+  background: #dc3545;
+  color: white;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .drawing-tools-compact {
+    gap: 8px;
+    padding: 6px 8px;
+  }
+  
+  .color-btn-compact {
+    width: 18px;
+    height: 18px;
+  }
+  
+  .size-slider-compact {
+    width: 50px;
+  }
+} 

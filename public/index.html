@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -7,10 +6,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#000000" />
     <meta name="description" content="Draw & Guess - Real-time multiplayer drawing game" />
-    <title>Draw & Guess</title>
+    <title>Ckribble~Labs</title>
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
-    <div id="root"></div>
+    <div id="root">
+      <div className="word-blanks">
+        <span className="word-label">Word ({wordLength} letters):</span>
+        <span className="masked-word">{maskedWord}</span>
+      </div>
+    </div>
   </body>
 </html>

@@ -1,32 +1,38 @@
-
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { supabase, callEdgeFunction } from '../lib/supabase';
+import '../styles/GamePage.css';
 import Canvas from '../components/Canvas';
 import DrawingTools from '../components/DrawingTools';
 import ChatBox from '../components/ChatBox';
 import Leaderboard from '../components/Leaderboard';
 import WordSelection from '../components/WordSelection';
 import GameTimer from '../components/GameTimer';
-import { 
-  startGame, 
-  startRound, 
-  endRound, 
+import {
+  startGame,
+  startRound,
+  endRound,
   endGame,
   updateTimer,
   updateScores,
-  setWordOptions
+  setWordOptions,
+  selectWord,
+  resetGameOverState
 } from '../redux/slices/gameSlice';
 import { setCanDraw, clearCanvas, addRemotePath } from '../redux/slices/canvasSlice';
-import { addMessage, addCorrectGuess, setGuessResult } from '../redux/slices/chatSlice';
+import { addMessage, addCorrectGuess, setGuessResult, clearChat } from '../redux/slices/chatSlice';
+import { setPlayers, addPlayer, removePlayer } from '../redux/slices/roomSlice';
 
 const GamePage = () => {
   const { roomId } = useParams();
   const navigate = useNavigate();
   const dispatch = useDispatch();
   
-  const { user } = useSelector(state => state.auth);
+  // Use ref to store channel instance to prevent recreation
+  const channelRef = useRef(null);
+  
+  const { user, profile } = useSelector(state => state.auth);
   const { players, settings } = useSelector(state => state.room);
   const { 
     isActive, 
@@ -37,70 +43,1150 @@ const GamePage = () => {
     timeRemaining,
     currentRound,
     totalRounds,
-    isGameOver
+    isGameOver,
+    scores,
+    turnOrder,
+    currentTurnIndex,
+    settings: gameSettings
   } = useSelector(state => state.game);
+  const { correctGuesses } = useSelector(state => state.chat);
+  const { canDraw } = useSelector(state => state.canvas);
 
   const isDrawer = user?.id === drawerId;
+  const hasGuessedCorrectly = correctGuesses.some(g => g.playerId === user?.id);
+
+  // Centralized score management - only drawer manages scores and turn endings
+  const [processedCorrectGuesses, setProcessedCorrectGuesses] = useState(new Set());
+  
+  // Add state for correct guess notification
+  const [showCorrectGuess, setShowCorrectGuess] = useState(false);
+
+  // Helper function to get or create channel
+  const getChannel = useCallback(() => {
+    if (!channelRef.current) {
+      channelRef.current = supabase.channel(`room:${roomId}`);
+    }
+    return channelRef.current;
+  }, [roomId]);
+  
+  // Helper function to properly end the game with authoritative cleanup
+  const endGameAuthoritative = useCallback(async (gameEndData) => {
+    console.log('🏁 [AUTHORITATIVE] Ending game with data:', gameEndData);
+    
+    try {
+      // Call the end-game function first to clean up the room
+      const endGameResult = await callEdgeFunction('end-game', {
+        roomId,
+        winner: gameEndData.winner,
+        winnerType: gameEndData.winnerType || 'individual',
+        finalScores: gameEndData.finalScores || scores,
+        teamScores: gameEndData.teamScores || {},
+        isTeamGame: gameEndData.isTeamGame || false,
+        reason: gameEndData.reason || 'completed',
+        gameStats: gameEndData.gameStats || {
+          totalRounds: totalRounds || 3,
+          totalTurns: players.length * (totalRounds || 3),
+          completedTurns: 0,
+          playerCount: players.length
+        }
+      });
+
+      console.log('✅ [AUTHORITATIVE] End-game function completed:', endGameResult);
+
+      // Now broadcast the authoritative game over event to all players
+      const channel = getChannel();
+      if (channel && channel.state === 'joined') {
+        const authoritativeGameOverData = {
+          ...gameEndData,
+          ...endGameResult, // Include any data from the end-game function
+          timestamp: Date.now(),
+          isAuthoritative: true
+        };
+
+        console.log('📡 [AUTHORITATIVE] Broadcasting game over to all players:', authoritativeGameOverData);
+        
+        channel.send({
+          type: 'broadcast',
+          event: 'game:over',
+          payload: authoritativeGameOverData
+        });
+      }
+
+      // Update local state
+      dispatch(endGame(gameEndData));
+
+      return endGameResult;
+    } catch (error) {
+      console.error('❌ [AUTHORITATIVE] Failed to end game:', error);
+      
+      // Fallback: still broadcast the game over event even if end-game function fails
+      const channel = getChannel();
+      if (channel && channel.state === 'joined') {
+        channel.send({
+          type: 'broadcast',
+          event: 'game:over',
+          payload: {
+            ...gameEndData,
+            timestamp: Date.now(),
+            isAuthoritative: true,
+            error: 'cleanup_failed'
+          }
+        });
+      }
+      
+      dispatch(endGame(gameEndData));
+      throw error;
+    }
+  }, [roomId, scores, totalRounds, players.length, dispatch, getChannel]);
+  
+  // Initialize room state if needed
+  useEffect(() => {
+    const initializeRoomState = async () => {
+      if (!roomId || !user?.id) return;
+      
+      // Always try to get fresh room state when component mounts
+      try {
+        console.log('🔧 Initializing room state for GamePage, current players:', players.length);
+        const response = await callEdgeFunction('join-room', {
+          roomId,
+          playerId: user.id,
+          playerData: profile ? {
+            id: user.id,
+            displayName: profile.displayName,
+            avatarUrl: profile.avatarUrl,
+            team: null,
+            joinedAt: new Date().toISOString(),
+            isCreator: false
+          } : undefined,
+          action: players.length === 0 ? 'join' : 'get-state'
+        });
+        
+        if (response?.success && response?.room) {
+          console.log('🏠 Got room state:', response.room);
+          if (response.room.players && response.room.players.length > 0) {
+            dispatch(setPlayers(response.room.players));
+            console.log('✅ Successfully set players from room state:', response.room.players.length);
+          }
+          
+          // Update settings if they're different
+          if (response.room.settings && JSON.stringify(response.room.settings) !== JSON.stringify(settings)) {
+            console.log('🔧 Updating settings from room state:', response.room.settings);
+            // You might want to dispatch an action to update settings in room slice
+          }
+        } else {
+          console.warn('⚠️ No room state received or invalid response');
+        }
+      } catch (error) {
+        console.error('❌ Failed to initialize room state:', error);
+      }
+    };
+    
+    // Initialize immediately
+    initializeRoomState();
+    
+    // Also re-initialize if players list becomes empty (connection issues)
+    if (players.length === 0) {
+      const retryTimeout = setTimeout(initializeRoomState, 2000);
+      return () => clearTimeout(retryTimeout);
+    }
+  }, [roomId, user?.id, profile, dispatch]);
+
+  // Debug drawer state changes and canvas permissions
+  useEffect(() => {
+    console.log('🎨 Drawer state changed:', {
+      drawerId,
+      isDrawer,
+      currentWord: !!currentWord,
+      canDraw: canDraw,
+      timeRemaining
+    });
+    
+    // Ensure canDraw is properly synchronized with isDrawer when word is available
+    if (currentWord && isDrawer && !canDraw) {
+      console.warn('🔧 FIXING: Drawer has word but canDraw is false, correcting...');
+      dispatch(setCanDraw(true));
+    } else if (currentWord && !isDrawer && canDraw) {
+      console.warn('🔧 FIXING: Non-drawer has canDraw true, correcting...');
+      dispatch(setCanDraw(false));
+    }
+  }, [drawerId, isDrawer, currentWord, canDraw, timeRemaining, dispatch]);
+
+  // Debug correctGuesses changes - simplified
+  useEffect(() => {
+    console.log('✅ Correct guesses updated:', correctGuesses.length);
+  }, [correctGuesses.length]);
+
+  // Simplified state debug - only log critical issues
+  useEffect(() => {
+    // Critical diagnostic for game over issues
+    if (isGameOver && isActive === false && players.length > 1) {
+      console.error('🚨 UNEXPECTED GAME OVER CONDITION!');
+      console.error('🚨 isGameOver:', isGameOver, 'isActive:', isActive, 'players:', players.length);
+    }
+  }, [isGameOver, isActive, players.length]);
+
+  // Generate masked word display (removed hints functionality)
+  const maskedWord = useMemo(() => {
+    if (!currentWord) return '';
+    if (isDrawer || hasGuessedCorrectly) return currentWord;
+    
+    // Simple underscore display without hints
+    return currentWord.split('').map(letter => {
+      if (letter === ' ') return ' ';
+      return '_';
+    }).join(' ');
+  }, [currentWord, isDrawer, hasGuessedCorrectly]);
+
+  // Calculate points based on guess speed
+  const calculatePoints = useCallback((timeTaken) => {
+    const maxPoints = 100;
+    const timeFactor = Math.max(0, (60 - timeTaken) / 60);
+    return Math.round(maxPoints * timeFactor);
+  }, []);
+
+  // State consistency monitor and auto-recovery
+  useEffect(() => {
+    // Check for inconsistent game state and auto-fix
+    const checkStateConsistency = () => {
+      // If we have word options but game is marked as game over, that's inconsistent
+      if (isGameOver && wordOptions.length > 0 && isDrawer && !currentWord) {
+        console.warn('🔧 Detected inconsistent state: game over but drawer has word options');
+        console.warn('🔧 Auto-fixing: resetting game over state');
+        dispatch(resetGameOverState());
+        return;
+      }
+
+      // If we're in an active game with a drawer but no word and no options, regenerate options
+      if (isActive && isDrawer && !currentWord && wordOptions.length === 0 && players.length > 1) {
+        console.warn('🔧 Detected missing word options for active drawer');
+        console.warn('🔧 Auto-fixing: regenerating word options');
+        
+        const regenerateWords = async () => {
+          try {
+            const wordResult = await callEdgeFunction('start-round', {
+              roomId,
+              drawerId: user.id,
+              roundNumber: currentRound || 1,
+              turnIndex: currentTurnIndex || 0,
+              turnOrder: turnOrder && turnOrder.length > 0 ? turnOrder : players.map(p => p.id),
+              usedWords: [],
+              drawingTime: gameSettings?.drawingTime || settings?.drawingTime || 60,
+              theme: gameSettings?.theme || settings?.theme || 'default',
+              action: 'generate_words'
+            });
+            
+            if (wordResult?.wordOptions) {
+              dispatch(setWordOptions(wordResult.wordOptions));
+              console.log('✅ Auto-recovery: Word options regenerated successfully');
+            }
+          } catch (error) {
+            console.error('❌ Auto-recovery failed:', error);
+          }
+        };
+        
+        regenerateWords();
+      }
+    };
+
+    // Run consistency check after a short delay to allow state to settle
+    const timeoutId = setTimeout(checkStateConsistency, 1000);
+    return () => clearTimeout(timeoutId);
+  }, [isGameOver, wordOptions, isDrawer, currentWord, isActive, players.length, roomId, user?.id, currentRound, currentTurnIndex, turnOrder, gameSettings?.theme, settings?.theme, dispatch]);
 
   // Supabase channel for real-time updates
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomId) {
+      console.log('❌ No roomId provided, skipping channel setup');
+      return;
+    }
 
-    const channel = supabase.channel(`room:${roomId}`);
+    console.log('🔗 Setting up Supabase channel for room:', roomId);
+    const channel = getChannel();
 
-    // Subscribe to game events
     channel
-      .on('broadcast', { event: 'game:start' }, (payload) => {
-        dispatch(startGame(payload));
-        dispatch(setCanDraw(payload.nextDrawer === user?.id));
-      })
-      .on('broadcast', { event: 'game:round' }, (payload) => {
-        dispatch(startRound(payload));
-        dispatch(setCanDraw(payload.drawerId === user?.id));
-        dispatch(clearCanvas());
-      })
-      .on('broadcast', { event: 'canvas:update' }, (payload) => {
-        if (payload.playerId !== user?.id) {
-          dispatch(addRemotePath(payload.path));
+      .on('broadcast', { event: 'player:join' }, (event) => {
+        console.log('👤 Player join event received in GamePage:', event);
+        const playerData = event.payload || event;
+        if (playerData && playerData.id && !players.find(p => p.id === playerData.id)) {
+          console.log('✅ Adding new player to game:', playerData);
+          dispatch(addPlayer(playerData));
+          
+          // Broadcast current game state to the new player if we're the host
+          if (user?.id === players.find(p => p.isCreator)?.id && isActive) {
+            const channel = getChannel();
+            setTimeout(() => {
+              if (channel && channel.state === 'joined') {
+                channel.send({
+                  type: 'broadcast',
+                  event: 'scores:update',
+                  payload: {
+                    scores: scores
+                  }
+                });
+              }
+            }, 1000);
+          }
+        } else {
+          console.log('👥 Player already exists or invalid data:', playerData);
         }
       })
+      .on('broadcast', { event: 'player:leave' }, (payload) => {
+        console.log('👋 Player leave event received in GamePage:', payload);
+        const playerData = payload.payload || payload;
+        
+        if (playerData?.playerId && playerData.playerId !== user?.id) {
+          console.log('🔍 Processing player leave for:', playerData.playerId);
+          console.log('🔍 Current players before removal:', players.map(p => ({ id: p.id, name: p.displayName })));
+          
+          dispatch(removePlayer(playerData.playerId));
+          
+          // Add a system message about the player leaving
+          dispatch(addMessage({
+            type: 'system',
+            text: `${playerData.playerName || 'A player'} left the game`,
+            timestamp: Date.now()
+          }));
+          
+          // Check if we need to end the game due to insufficient players
+          const remainingPlayers = players.filter(p => p.id !== playerData.playerId);
+          console.log('👥 Remaining players after leave:', remainingPlayers.length);
+          console.log('👥 Remaining players details:', remainingPlayers.map(p => ({ id: p.id, name: p.displayName })));
+          
+          // CRITICAL: Only end game if we're truly in an active game state with multiple players originally
+          // and now have insufficient players, AND the game was actually started (not just in lobby)
+          const shouldEndGame = isActive && 
+                                currentWord && // Game must have actually started with a word
+                                remainingPlayers.length > 0 && 
+                                remainingPlayers.length <= 1 && 
+                                !(gameSettings?.isTeamGame || settings?.isTeamGame);
+          
+          console.log('🎯 Game ending analysis:', {
+            isActive,
+            hasCurrentWord: !!currentWord,
+            remainingCount: remainingPlayers.length,
+            isTeamGame: gameSettings?.isTeamGame || settings?.isTeamGame,
+            shouldEndGame
+          });
+          
+          if (shouldEndGame) {
+            console.log('🏁 Ending game - not enough players remaining for active game');
+            
+            // Use authoritative game ending
+            setTimeout(() => {
+              endGameAuthoritative({
+                winner: remainingPlayers[0]?.id || null,
+                winnerType: 'individual',
+                finalScores: scores,
+                teamScores: {},
+                isTeamGame: false,
+                reason: 'insufficient_players',
+                gameStats: {
+                  totalRounds: totalRounds || 3,
+                  totalTurns: players.length * (totalRounds || 3),
+                  completedTurns: 0,
+                  playerCount: remainingPlayers.length
+                },
+                timestamp: Date.now()
+              }).catch(error => {
+                console.error('❌ Failed to end game authoritatively:', error);
+              });
+            }, 2000);
+          } else if ((gameSettings?.isTeamGame || settings?.isTeamGame) && isActive && currentWord) {
+            // For team games, check if entire team left
+            const teamCounts = remainingPlayers.reduce((counts, player) => {
+              const team = player.team || 'Red';
+              counts[team] = (counts[team] || 0) + 1;
+              return counts;
+            }, {});
+            
+            const activeTeams = Object.keys(teamCounts).filter(team => teamCounts[team] > 0);
+            console.log('🏷️ Active teams:', activeTeams, 'Team counts:', teamCounts);
+            
+            if (activeTeams.length <= 1) {
+              console.log('🏁 Ending team game - only one team remains');
+              
+              // Calculate team scores for team game ending
+              const teamScores = {};
+              const teamNames = gameSettings?.teamNames || settings?.teamNames || ['Red', 'Blue'];
+              teamNames.forEach(teamName => {
+                const teamPlayers = remainingPlayers.filter(p => p.team === teamName);
+                const teamTotalScore = teamPlayers.reduce((sum, player) => 
+                  sum + (scores[player.id] || 0), 0
+                );
+                const teamAvgScore = teamPlayers.length > 0 ? 
+                  Math.round(teamTotalScore / teamPlayers.length) : 0;
+                
+                teamScores[teamName] = {
+                  totalScore: teamTotalScore,
+                  averageScore: teamAvgScore,
+                  playerCount: teamPlayers.length,
+                  players: teamPlayers.map(p => ({ id: p.id, name: p.displayName, score: scores[p.id] || 0 }))
+                };
+              });
+              
+              // Use authoritative team game ending
+              setTimeout(() => {
+                endGameAuthoritative({
+                  winner: activeTeams[0] || null,
+                  winnerType: 'team',
+                  finalScores: scores,
+                  teamScores: teamScores,
+                  isTeamGame: true,
+                  reason: 'team_insufficient',
+                  gameStats: {
+                    totalRounds: totalRounds || 3,
+                    totalTurns: players.length * (totalRounds || 3),
+                    completedTurns: 0,
+                    playerCount: remainingPlayers.length
+                  },
+                  timestamp: Date.now()
+                }).catch(error => {
+                  console.error('❌ Failed to end team game authoritatively:', error);
+                });
+              }, 2000);
+            }
+          } else {
+            console.log('🔄 Not ending game - conditions not met for game end', {
+              isActive,
+              hasCurrentWord: !!currentWord,
+              remainingCount: remainingPlayers.length,
+              reason: 'insufficient_conditions'
+            });
+          }
+        } else if (playerData?.playerId === user?.id) {
+          console.log('🚫 Ignoring own leave event to prevent premature game ending');
+        } else {
+          console.log('⚠️ Invalid player leave data:', playerData);
+        }
+      })
+      .on('broadcast', { event: 'game:start' }, (event) => {
+        console.log('🎮 GAME START EVENT received:', event);
+        const payload = event.payload || event;
+        console.log('🎮 Extracted payload:', payload);
+        console.log('Current user ID:', user?.id);
+        console.log('Players available before game start:', players.map(p => ({ id: p.id, name: p.displayName })));
+        
+        // Ensure we have players data - if not, try to get it from the payload
+        if (players.length === 0 && payload.players) {
+          console.log('🔧 Setting players from game start payload:', payload.players);
+          dispatch(setPlayers(payload.players));
+        }
+        
+        const gameData = {
+          ...payload,
+          turnOrder: payload.turnOrder || players.map(p => p.id),
+          currentTurnIndex: 0,
+          totalRounds: payload.totalRounds || payload.settings?.rounds || settings?.rounds || 3,
+          // Prioritize settings from payload, then fallback to local settings
+          settings: payload.settings || payload.gameState?.settings || settings,
+          // Ensure drawing time is properly set
+          timeRemaining: payload.settings?.drawingTime || payload.timeRemaining || settings?.drawingTime || 60
+        };
+        
+        console.log('Dispatching startGame with data:', gameData);
+        dispatch(startGame(gameData));
+        
+        const canDraw = payload.nextDrawer === user?.id || payload.drawerId === user?.id;
+        console.log('🎨 [GAME START] Setting canDraw to:', canDraw, 'for user:', user?.id, 'drawerId:', payload.drawerId || payload.nextDrawer);
+        dispatch(setCanDraw(canDraw));
+        dispatch(clearChat());
+        
+        // Check if we need to start the first round
+        const firstDrawerId = payload.nextDrawer || payload.drawerId;
+        if (firstDrawerId && firstDrawerId === user?.id) {
+          console.log('🎨 This user is the first drawer, should receive word options soon');
+        } else {
+          console.log('👀 This user is not the first drawer, firstDrawerId:', firstDrawerId);
+        }
+      })
+      .on('broadcast', { event: 'game:round' }, (event) => {
+        console.log('🎯 ROUND START EVENT received:', event);
+        const payload = event.payload || event;
+        console.log('🎯 Extracted payload:', payload);
+        console.log('Payload drawerId:', payload.drawerId);
+        console.log('Current user ID:', user?.id);
+        console.log('Is this user the drawer?', payload.drawerId === user?.id);
+        
+        // Enhanced payload with proper word length and timer
+        const drawingTime = payload.drawingTime || gameSettings?.drawingTime || settings?.drawingTime || 60;
+        const enhancedPayload = {
+          ...payload,
+          drawingTime: drawingTime
+        };
+        
+        dispatch(startRound(enhancedPayload));
+        const isUserDrawer = payload.drawerId === user?.id;
+        dispatch(setCanDraw(isUserDrawer));
+        
+        console.log('🎨 [ROUND START] Setting canDraw to:', isUserDrawer, 'for user:', user?.id, 'drawerId:', payload.drawerId);
+        console.log('⏰ [ROUND START] Setting timer to:', drawingTime, 'seconds');
+        
+        // Initialize timer properly for the new round
+        dispatch(updateTimer(drawingTime));
+        
+        // Clear canvas for ALL players when a new turn starts
+        console.log('🧹 Clearing canvas for new turn/round');
+        dispatch(clearCanvas());
+        
+        dispatch(clearChat());
+        
+        // If this player is the drawer, set word options
+        if (payload.drawerId === user?.id && payload.wordOptions) {
+          console.log('🎲 Setting word options for drawer:', payload.wordOptions);
+          dispatch(setWordOptions(payload.wordOptions));
+        } else if (payload.drawerId === user?.id) {
+          console.log('⚠️ User is drawer but no wordOptions provided in payload');
+        } else {
+          console.log('👥 User is not drawer, drawerId is:', payload.drawerId);
+        }
+      })
+      .on('broadcast', { event: 'word:selected' }, (event) => {
+        console.log('📝 WORD SELECTED EVENT received:', event);
+        const payload = event.payload || event;
+        const selectedWord = payload.word || payload.selectedWord;
+        const drawerId = payload.drawerId;
+        console.log('📝 Extracted word:', selectedWord, 'wordLength:', payload.wordLength, 'drawerId:', drawerId);
+        
+        if (selectedWord) {
+          dispatch(selectWord(selectedWord));
+          dispatch(setWordOptions([])); // Clear word options for all players
+          
+          // Set canvas drawing permissions
+          const canUserDraw = drawerId === user?.id;
+          console.log('🎨 [WORD SELECTED] Setting canvas permission - canDraw:', canUserDraw, 'for user:', user?.id, 'drawerId:', drawerId);
+          dispatch(setCanDraw(canUserDraw));
+          
+          // Ensure timer is properly set when word is selected
+          const currentTime = gameSettings?.drawingTime || settings?.drawingTime || 60;
+          console.log('⏰ [WORD SELECTED] Ensuring timer is set to:', currentTime);
+          dispatch(updateTimer(currentTime));
+          
+          console.log('📝 Word selection processed for all players');
+        } else {
+          console.error('❌ No word found in word:selected event payload:', payload);
+        }
+      })
+      .on('broadcast', { event: 'canvas:update' }, (event) => {
+        const payload = event.payload || event;
+        console.log('🎨 Canvas update event:', event);
+        console.log('🎨 Canvas payload:', payload);
+        
+        if (payload && payload.playerId !== user?.id) {
+          console.log('🎨 Processing remote canvas update from:', payload.playerId);
+          dispatch(addRemotePath(payload));
+        } else if (payload && payload.playerId === user?.id) {
+          console.log('🎨 Ignoring own canvas update');
+        } else {
+          console.log('🎨 Invalid canvas payload:', payload);
+        }
+      })
+      .on('broadcast', { event: 'canvas:clear' }, (payload) => {
+        console.log('🧹 Canvas clear event received');
+        dispatch(clearCanvas());
+      })
       .on('broadcast', { event: 'chat:guess' }, (payload) => {
+        console.log('💬 CHAT GUESS EVENT received:', payload);
         dispatch(addMessage(payload));
       })
-      .on('broadcast', { event: 'chat:correct' }, (payload) => {
-        dispatch(addCorrectGuess(payload));
+      .on('broadcast', { event: 'chat:correct' }, (event) => {
+        console.log('✅ CORRECT GUESS EVENT received:', event);
+        const payload = event.payload || event;
+        
+        // Validate payload structure and prevent duplicates
+        if (!payload.playerId || !payload.timestamp) {
+          console.warn('⚠️ Invalid correct guess payload:', payload);
+          return;
+        }
+        
+        // Check for duplicate using timestamp and playerId
+        const duplicateKey = `${payload.playerId}-${payload.timestamp}`;
+        if (window.processedGuesses?.has(duplicateKey)) {
+          console.log('⚠️ Duplicate correct guess event ignored:', duplicateKey);
+          return;
+        }
+        
+        // Initialize processed guesses tracker if not exists
+        if (!window.processedGuesses) {
+          window.processedGuesses = new Set();
+        }
+        window.processedGuesses.add(duplicateKey);
+        
+        // Clean old entries (keep only last 100)
+        if (window.processedGuesses.size > 100) {
+          const entries = Array.from(window.processedGuesses);
+          window.processedGuesses = new Set(entries.slice(-50));
+        }
+        
+        dispatch(addCorrectGuess({
+          playerId: payload.playerId,
+          playerName: payload.playerName,
+          timeTaken: payload.timeTaken,
+          points: payload.points
+        }));
+        
+        // Only the drawer manages individual score updates (prevent duplication)
+        if (payload.points && payload.playerId && isDrawer) {
+          console.log('📊 [DRAWER] Adding points for correct guess:', payload.playerId, '+', payload.points);
+          
+          // Use incremental score update for correct guesses
+          dispatch(updateScores({
+            scores: { [payload.playerId]: payload.points },
+            incremental: true,
+            source: 'correct_guess_local'
+          }));
+          
+          // Broadcast incremental score update to all players for real-time feedback
+          const channel = getChannel();
+          if (channel && channel.state === 'joined') {
+            channel.send({
+              type: 'broadcast',
+              event: 'scores:update',
+              payload: {
+                scores: { [payload.playerId]: payload.points },
+                incremental: true,
+                source: 'correct_guess_realtime',
+                timestamp: Date.now(),
+                isAuthoritative: false // Mark as non-authoritative to prevent conflicts
+              }
+            });
+          }
+        }
+        
+        // Add both the correct guess and success message
         dispatch(addMessage({
-          type: 'system',
-          text: `${payload.playerName} guessed correctly!`,
+          type: 'correct',
+          text: `${payload.playerName} guessed the word correctly!`,
+          playerName: payload.playerName,
+          playerId: payload.playerId,
+          points: payload.points || 0,
+          timestamp: Date.now()
         }));
       })
-      .on('broadcast', { event: 'game:round-end' }, (payload) => {
+      .on('broadcast', { event: 'chat:close' }, (payload) => {
+        console.log('🔥 CLOSE GUESS EVENT received:', payload);
+        dispatch(addMessage({
+          type: 'system-close',
+          text: `${payload.playerName}'s guess is very close!`,
+          timestamp: Date.now()
+        }));
+      })
+      .on('broadcast', { event: 'timer:update' }, (event) => {
+        const payload = event.payload || event;
+        console.log('⏰ Timer update received:', payload);
+        if (payload && typeof payload.timeRemaining === 'number') {
+          dispatch(updateTimer(payload.timeRemaining));
+        } else {
+          console.warn('⚠️ Invalid timer payload:', payload);
+        }
+      })
+      .on('broadcast', { event: 'game:round-end' }, (event) => {
+        console.log('🏁 TURN/ROUND END EVENT received:', event);
+        const payload = event.payload || event;
+        
         dispatch(endRound(payload));
-        dispatch(updateScores(payload.scores));
+        
+        // Update scores for all players
+        if (payload.scores) {
+          console.log('📊 Updating scores from round end:', payload.scores);
+          dispatch(updateScores({
+            scores: payload.scores,
+            incremental: false,
+            source: 'authoritative'
+          }));
+        }
+        
+        // Show the word to everyone
+        dispatch(addMessage({
+          type: 'system',
+          text: `The word was: ${payload.word}`,
+          timestamp: Date.now()
+        }));
+
+        // Show round progress
+        if (payload.isNewRound) {
+          dispatch(addMessage({
+            type: 'system',
+            text: `🎉 Round ${payload.nextRound - 1} completed! Starting Round ${payload.nextRound}`,
+            timestamp: Date.now()
+          }));
+        }
+
+        // Clear canvas for all players when turn ends
+        console.log('🧹 Clearing canvas at turn end for all players');
+        dispatch(clearCanvas());
+
+        // If there's a next drawer, prepare for next turn/round
+        if (!payload.isGameOver && payload.nextDrawer) {
+          const actionType = payload.isNewRound ? 'round' : 'turn';
+          console.log(`🔄 Preparing next ${actionType} with drawer:`, payload.nextDrawer);
+          
+          setTimeout(() => {
+            console.log('🎲 Calling start-round to generate words for next drawer');
+            
+            // Ensure all required fields are properly set
+            const startRoundPayload = {
+              roomId,
+              drawerId: payload.nextDrawer,
+              roundNumber: payload.nextRound || currentRound || 1,
+              turnIndex: payload.nextTurnIndex !== undefined ? payload.nextTurnIndex : 0,
+              turnOrder: turnOrder && turnOrder.length > 0 ? turnOrder : players.map(p => p.id),
+              usedWords: payload.usedWords || [],
+              drawingTime: gameSettings?.drawingTime || settings?.drawingTime || 60,
+              theme: gameSettings?.theme || settings?.theme || 'default',
+              action: 'generate_words'
+            };
+            
+            // Validate payload before sending
+            if (!startRoundPayload.roomId || !startRoundPayload.drawerId || startRoundPayload.turnOrder.length === 0) {
+              console.error('❌ Invalid payload for start-round:', {
+                hasRoomId: !!startRoundPayload.roomId,
+                hasDrawerId: !!startRoundPayload.drawerId,
+                turnOrderLength: startRoundPayload.turnOrder.length
+              });
+              return;
+            }
+            
+            console.log('📤 Sending start-round payload:', startRoundPayload);
+            
+            // Generate words for next drawer
+            callEdgeFunction('start-round', startRoundPayload).then(result => {
+              console.log(`📦 start-${actionType} response:`, result);
+              if (result?.wordOptions && result.wordOptions.length > 0) {
+                console.log(`📡 Broadcasting next ${actionType} start event`);
+                const channel = getChannel();
+                if (channel && channel.state === 'joined') {
+                  channel.send({
+                    type: 'broadcast',
+                    event: 'game:round',
+                    payload: {
+                      drawerId: payload.nextDrawer,
+                                        roundNumber: payload.nextRound || currentRound,
+                  turnIndex: payload.nextTurnIndex || 0,
+                  wordOptions: result.wordOptions,
+                  drawingTime: gameSettings?.drawingTime || settings?.drawingTime || 60,
+                  isNewRound: payload.isNewRound || false
+                    }
+                  });
+                } else {
+                  console.error('❌ Channel not available for broadcasting');
+                }
+              } else {
+                console.error(`❌ No wordOptions in start-${actionType} response:`, result);
+              }
+            }).catch(error => {
+              console.error(`❌ Failed to start next ${actionType}:`, error);
+              // Try to recover by regenerating the channel
+              if (error.message && error.message.includes('400')) {
+                console.log('🔄 Attempting recovery due to 400 error');
+              }
+            });
+          }, 3000); // 3 second delay before next turn/round
+        } else if (payload.isGameOver) {
+          console.log('🎉 Game is completely over!');
+          dispatch(addMessage({
+            type: 'system',
+            text: `🎉 Game Over! All ${payload.gameProgress?.currentRound || totalRounds} rounds completed!`,
+            timestamp: Date.now()
+          }));
+        } else {
+          console.log('⚠️ Turn ended but no next drawer provided');
+        }
       })
-      .on('broadcast', { event: 'game:over' }, (payload) => {
-        dispatch(endGame(payload));
+      .on('broadcast', { event: 'game:over' }, (event) => {
+        console.log('🎉 GAME OVER EVENT received:', event);
+        const payload = event.payload || event;
+        
+        // Only accept authoritative game over events to prevent race conditions
+        if (payload.isAuthoritative) {
+          console.log('✅ Processing authoritative game over event');
+          
+          // Dispatch game end with all the necessary data for team games
+          dispatch(endGame({
+            winner: payload.winner,
+            winnerType: payload.winnerType || 'individual',
+            finalScores: payload.finalScores || scores,
+            teamScores: payload.teamScores || {},
+            isTeamGame: payload.isTeamGame || false,
+            reason: payload.reason || 'completed',
+            gameStats: payload.gameStats || {},
+            timestamp: payload.timestamp || Date.now()
+          }));
+        } else {
+          console.warn('⚠️ Ignoring non-authoritative game over event:', payload);
+        }
       })
-      .on('broadcast', { event: 'timer:update' }, (payload) => {
-        dispatch(updateTimer(payload.timeRemaining));
+      .on('broadcast', { event: 'scores:update' }, (event) => {
+        console.log('📊 SCORES UPDATE EVENT received:', event);
+        const payload = event.payload || event;
+        
+        if (payload.scores && typeof payload.scores === 'object') {
+          console.log('📊 Score update details:', {
+            source: payload.source,
+            incremental: payload.incremental,
+            isAuthoritative: payload.isAuthoritative,
+            isDrawer: isDrawer,
+            currentScores: scores,
+            incomingScores: payload.scores
+          });
+          
+          // Apply updates based on authority and role
+          if (payload.isAuthoritative || payload.source === 'authoritative') {
+            // Always apply authoritative updates (like turn end)
+            dispatch(updateScores({
+              scores: payload.scores,
+              incremental: payload.incremental || false,
+              source: 'authoritative'
+            }));
+            console.log('✅ Applied authoritative score update');
+          } else if (!isDrawer && payload.source === 'correct_guess_realtime') {
+            // Non-drawers apply real-time guess updates for immediate feedback
+            dispatch(updateScores({
+              scores: payload.scores,
+              incremental: payload.incremental || false,
+              source: payload.source
+            }));
+            console.log('✅ Applied real-time guess update for non-drawer');
+          } else {
+            console.log('⏭️ Skipped non-authoritative update:', {
+              reason: isDrawer ? 'drawer manages own scores' : 'non-authoritative source'
+            });
+          }
+        } else {
+          console.warn('⚠️ Invalid scores update payload:', payload);
+        }
       })
       .subscribe();
 
+    console.log('📡 Channel subscribed for room:', roomId);
+
     return () => {
-      supabase.removeChannel(channel);
+      console.log('🔌 Removing channel for room:', roomId);
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+        channelRef.current = null;
+      }
     };
-  }, [roomId, user?.id, dispatch]);
+  }, [roomId, user?.id, getChannel]);
+
+  // Handle time up - ends current turn, not entire round
+  const handleTimeUp = useCallback(async () => {
+    if (!isDrawer || !currentWord) {
+      console.warn('⚠️ handleTimeUp called but conditions not met:', { isDrawer, currentWord });
+      return;
+    }
+    
+    console.log('⏰ Time ran out, ending turn for drawer:', drawerId);
+    const playerScores = correctGuesses.map(g => ({
+      playerId: g.playerId,
+      points: calculatePoints(g.timeTaken || 0),
+      timeTaken: g.timeTaken || 0,
+      guessedCorrectly: true
+    }));
+
+    console.log('📊 Ending turn due to timeout with scores:', playerScores);
+
+    // Validate required fields before calling end-round
+    const endRoundPayload = {
+      roomId,
+      currentDrawerId: drawerId,
+      word: currentWord,
+      playerScores,
+      currentRound: currentRound || 1,
+      totalRounds: totalRounds || 3,
+      turnOrder: turnOrder && turnOrder.length > 0 ? turnOrder : players.map(p => p.id),
+      currentTurnIndex: currentTurnIndex || 0,
+      reason: 'timeout'
+    };
+
+    // Validate payload before sending
+    if (!endRoundPayload.roomId || !endRoundPayload.currentDrawerId || !endRoundPayload.word || endRoundPayload.turnOrder.length === 0) {
+      console.error('❌ Invalid payload for end-round:', {
+        hasRoomId: !!endRoundPayload.roomId,
+        hasCurrentDrawerId: !!endRoundPayload.currentDrawerId,
+        hasWord: !!endRoundPayload.word,
+        word: endRoundPayload.word,
+        turnOrderLength: endRoundPayload.turnOrder.length,
+        turnOrder: endRoundPayload.turnOrder,
+        completePayload: endRoundPayload
+      });
+      return;
+    }
+
+    try {
+      console.log('📤 Sending end-round payload:', endRoundPayload);
+      const turnResult = await callEdgeFunction('end-round', endRoundPayload);
+
+      console.log('📦 end-turn response for timeout:', turnResult);
+      const channel = getChannel();
+      if (channel && channel.state === 'joined') {
+        channel.send({
+          type: 'broadcast',
+          event: 'game:round-end',
+          payload: turnResult
+        });
+      }
+    } catch (error) {
+      console.error('❌ Failed to end turn on timeout:', error);
+      console.error('❌ Error details:', error.message || error);
+    }
+  }, [isDrawer, roomId, currentWord, correctGuesses, calculatePoints, drawerId, currentRound, totalRounds, turnOrder, currentTurnIndex, players, getChannel]);
+
+  // Centralized score management - only drawer manages scores and turn endings
+  // Only the drawer handles turn ending logic and score management
+  useEffect(() => {
+    if (!isDrawer || !isActive || !currentWord) return;
+    
+    const totalGuessers = players.length - 1; // Exclude drawer
+    const currentCorrectGuesses = correctGuesses.length;
+    
+    console.log('🎯 [DRAWER] Checking turn state:', {
+      totalGuessers,
+      currentCorrectGuesses,
+      shouldEndTurn: totalGuessers > 0 && currentCorrectGuesses >= totalGuessers,
+      drawerId,
+      correctGuessesList: correctGuesses.map(g => ({ id: g.playerId, name: g.playerName }))
+    });
+    
+    // Check if all players have guessed correctly (only drawer does this check)
+    if (totalGuessers > 0 && currentCorrectGuesses >= totalGuessers) {
+      console.log('🏁 [DRAWER] All non-drawer players guessed correctly, ending turn');
+      
+      // Prevent multiple turn endings
+      const turnEndKey = `${roomId}-${drawerId}-${currentWord}-${currentCorrectGuesses}`;
+      if (processedCorrectGuesses.has(turnEndKey)) {
+        console.log('⚠️ [DRAWER] Turn end already processed, skipping');
+        return;
+      }
+      
+      setProcessedCorrectGuesses(prev => new Set(prev).add(turnEndKey));
+      
+      setTimeout(() => {
+        console.log('🎯 [DRAWER] Processing turn end with correct guesses');
+        
+        // Use the points that were already calculated and awarded for correct guesses
+        const playerScores = correctGuesses.map(g => ({
+          playerId: g.playerId,
+          points: g.points || calculatePoints(g.timeTaken || 0), // Use existing points if available
+          timeTaken: g.timeTaken || 0,
+          guessedCorrectly: true
+        }));
+
+        console.log('📊 [DRAWER] Ending turn with scores:', playerScores);
+
+        // Add drawer points incrementally to current scores
+        const drawerPoints = Math.round(50 * (currentCorrectGuesses / totalGuessers));
+        
+        console.log('📊 [DRAWER] Turn end score calculation:', {
+          currentScores: scores,
+          drawerPoints,
+          drawerId
+        });
+        
+        // Update drawer points locally using incremental update
+        dispatch(updateScores({
+          scores: { [drawerId]: drawerPoints },
+          incremental: true,
+          source: 'drawer_points_local'
+        }));
+        
+        // Get the updated scores after adding drawer points
+        const finalScores = { ...scores };
+        finalScores[drawerId] = (finalScores[drawerId] || 0) + drawerPoints;
+        
+        console.log('📊 [DRAWER] Broadcasting final turn scores as authoritative:', finalScores);
+        
+        // Broadcast authoritative final scores to ALL players
+        const channel = getChannel();
+        if (channel && channel.state === 'joined') {
+          channel.send({
+            type: 'broadcast',
+            event: 'scores:update',
+            payload: {
+              scores: finalScores,
+              incremental: false,
+              source: 'authoritative',
+              timestamp: Date.now(),
+              isAuthoritative: true // Mark this as the authoritative score update
+            }
+          });
+        } else {
+          console.error('❌ [DRAWER] Channel not available for score broadcasting');
+        }
+
+        callEdgeFunction('end-round', {
+          roomId,
+          currentDrawerId: drawerId,
+          word: currentWord,
+          playerScores,
+          currentRound: currentRound || 1,
+          totalRounds: totalRounds || 3,
+          turnOrder: turnOrder && turnOrder.length > 0 ? turnOrder : players.map(p => p.id),
+          currentTurnIndex: currentTurnIndex || 0,
+          reason: 'all_guessed'
+        }).then(roundResult => {
+          console.log('📦 [DRAWER] end-round response:', roundResult);
+          if (channel && channel.state === 'joined') {
+            channel.send({
+              type: 'broadcast',
+              event: 'game:round-end',
+              payload: roundResult
+            });
+            
+            // Check if game is over and broadcast game end event
+            if (roundResult.isGameOver) {
+              console.log('🎉 [DRAWER] Broadcasting game over event to all players');
+              
+              // Calculate team scores for team games
+              const teamScores = {};
+              if (gameSettings?.isTeamGame || settings?.isTeamGame) {
+                const teamNames = gameSettings?.teamNames || settings?.teamNames || ['Red', 'Blue'];
+                teamNames.forEach(teamName => {
+                  const teamPlayers = players.filter(p => p.team === teamName);
+                  const teamTotalScore = teamPlayers.reduce((sum, player) => 
+                    sum + (finalScores[player.id] || 0), 0
+                  );
+                  const teamAvgScore = teamPlayers.length > 0 ? 
+                    Math.round(teamTotalScore / teamPlayers.length) : 0;
+                  
+                  teamScores[teamName] = {
+                    totalScore: teamTotalScore,
+                    averageScore: teamAvgScore,
+                    playerCount: teamPlayers.length,
+                    players: teamPlayers.map(p => ({ id: p.id, name: p.displayName, score: finalScores[p.id] || 0 }))
+                  };
+                });
+              }
+              
+              // Determine winner (individual or team)
+              let winner = null;
+              let winnerType = 'individual';
+              
+              if (gameSettings?.isTeamGame || settings?.isTeamGame) {
+                // Find winning team
+                const sortedTeams = Object.entries(teamScores).sort(([,a], [,b]) => b.totalScore - a.totalScore);
+                winner = sortedTeams[0]?.[0] || null;
+                winnerType = 'team';
+              } else {
+                // Find individual winner
+                const sortedPlayers = Object.entries(finalScores).sort(([,a], [,b]) => b - a);
+                winner = sortedPlayers[0]?.[0] || null;
+              }
+              
+              setTimeout(() => {
+                // Use authoritative game ending for completed game
+                endGameAuthoritative({
+                  winner,
+                  winnerType,
+                  finalScores: finalScores,
+                  teamScores: teamScores,
+                  isTeamGame: gameSettings?.isTeamGame || settings?.isTeamGame,
+                  reason: 'completed',
+                  gameStats: {
+                    totalRounds: roundResult.gameProgress?.totalRounds || totalRounds,
+                    totalTurns: roundResult.gameProgress?.totalTurns || (players.length * totalRounds),
+                    completedTurns: roundResult.gameProgress?.completedTurns || 0,
+                    playerCount: players.length
+                  },
+                  timestamp: Date.now()
+                }).catch(error => {
+                  console.error('❌ Failed to end completed game authoritatively:', error);
+                });
+              }, 1000);
+            }
+          }
+        }).catch(error => {
+          console.error('❌ [DRAWER] Failed to end round:', error);
+          // Remove from processed set on error to allow retry
+          setProcessedCorrectGuesses(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(turnEndKey);
+            return newSet;
+          });
+        });
+      }, 1000);
+    }
+  }, [isDrawer, isActive, currentWord, correctGuesses.length, players.length, drawerId, scores, currentRound, totalRounds, turnOrder, currentTurnIndex, roomId, calculatePoints, getChannel, processedCorrectGuesses]);
+
+  // Timer synchronization for drawer
+  useEffect(() => {
+    // Only start timer if we have proper conditions and valid time
+    if (!isDrawer || !isActive || !currentWord || timeRemaining <= 0) {
+      if (isDrawer && timeRemaining <= 0) {
+        console.warn('⚠️ Timer not starting: timeRemaining is 0 or negative:', timeRemaining);
+      }
+      return;
+    }
+
+    console.log('⏰ Starting timer for drawer, initial time:', timeRemaining);
+    
+    const timerInterval = setInterval(() => {
+      dispatch((dispatch, getState) => {
+        const currentTime = getState().game.timeRemaining;
+        const newTime = Math.max(0, currentTime - 1);
+        
+        // Only log timer ticks every 10 seconds to reduce noise
+        if (currentTime % 10 === 0 || newTime <= 10) {
+          console.log('⏰ Timer tick:', currentTime, '→', newTime);
+        }
+        dispatch(updateTimer(newTime));
+        
+        // Broadcast timer update to other players
+        const channel = getChannel();
+        if (channel && channel.state === 'joined') {
+          channel.send({
+            type: 'broadcast',
+            event: 'timer:update',
+            payload: {
+              timeRemaining: newTime
+            }
+          });
+        }
+        
+        // Auto-end round when time runs out
+        if (newTime <= 0) {
+          console.log('⏰ Timer reached 0, ending round');
+          clearInterval(timerInterval); // Clear interval before ending round
+          handleTimeUp();
+        }
+      });
+    }, 1000);
+
+    return () => {
+      console.log('⏰ Clearing timer interval');
+      clearInterval(timerInterval);
+    };
+  }, [isDrawer, isActive, currentWord, timeRemaining, getChannel, handleTimeUp]);
 
   // Handle canvas path updates
   const handlePathUpdate = useCallback((path) => {
     if (!isDrawer) return;
     
-    const channel = supabase.channel(`room:${roomId}`);
+    console.log('🎨 Canvas path update from drawer, path:', path);
+    const channel = getChannel();
+    if (channel && channel.state === 'joined' && path) {
+      channel.send({
+        type: 'broadcast',
+        event: 'canvas:update',
+        payload: path // Send the path directly, not nested
+      });
+    } else {
+      console.warn('⚠️ Cannot send canvas update:', { 
+        channelState: channel?.state, 
+        hasPath: !!path 
+      });
+    }
+  }, [isDrawer, getChannel, user?.id]);
+
+  // Handle canvas clear
+  const handleCanvasClear = useCallback(() => {
+    if (!isDrawer) return;
+    
+    console.log('🧹 Canvas clear from drawer');
+    const channel = getChannel();
     channel.send({
       type: 'broadcast',
-      event: 'canvas:update',
+      event: 'canvas:clear',
       payload: { 
-        path,
         playerId: user.id,
         timestamp: Date.now()
       }
@@ -109,36 +1195,68 @@ const GamePage = () => {
 
   // Handle guess submission
   const handleGuessSubmit = useCallback(async (guess) => {
-    if (!currentWord || isDrawer) return;
+    if (!currentWord || isDrawer || hasGuessedCorrectly) {
+      console.log('🚫 Guess blocked:', { 
+        hasCurrentWord: !!currentWord, 
+        isDrawer, 
+        hasGuessedCorrectly 
+      });
+      return;
+    }
+
+    console.log('🤔 Submitting guess:', guess, 'against word:', currentWord);
 
     try {
-      // Submit guess to edge function
       const result = await callEdgeFunction('submit-guess', {
         guess,
         actualWord: currentWord
       });
 
+      console.log('💭 Guess result:', result);
       dispatch(setGuessResult(result));
 
-      // Broadcast guess to other players
-      const channel = supabase.channel(`room:${roomId}`);
+      const channel = getChannel();
+      const timeTaken = 60 - timeRemaining;
       
       if (result.isCorrect) {
-        // Broadcast correct guess
+        const points = calculatePoints(timeTaken);
+        console.log('✅ Correct guess! Points awarded:', points);
+        
+        // Show success notification to the player who guessed correctly
+        setShowCorrectGuess(true);
+        setTimeout(() => setShowCorrectGuess(false), 3000); // Hide after 3 seconds
+        
+        // Broadcast correct guess to all players (including drawer for centralized management)
         channel.send({
           type: 'broadcast',
           event: 'chat:correct',
           payload: {
             playerId: user.id,
-            playerName: user.displayName || 'Anonymous',
-            timeTaken: 60 - timeRemaining
+            playerName: profile.displayName || 'Anonymous',
+            timeTaken,
+            points,
+            timestamp: Date.now() // Add timestamp for deduplication
           }
         });
 
-        // Check if round should end
-        // This would typically be handled by the server/edge function
+        // Only the drawer manages the turn end logic and score broadcasting
+        // This prevents multiple players from trying to end the round simultaneously
+        console.log('✅ Correct guess submitted, waiting for drawer to manage turn state');
+        
       } else {
-        // Broadcast regular guess
+        console.log('❌ Incorrect guess, isClose:', result.isClose);
+        // Broadcast regular guess or close guess
+        if (result.isClose) {
+          channel.send({
+            type: 'broadcast',
+            event: 'chat:close',
+            payload: {
+              playerId: user.id,
+              playerName: profile.displayName || 'Anonymous'
+            }
+          });
+        }
+        
         channel.send({
           type: 'broadcast',
           event: 'chat:guess',
@@ -146,82 +1264,255 @@ const GamePage = () => {
             type: 'guess',
             text: guess,
             playerId: user.id,
-            playerName: user.displayName || 'Anonymous',
+            playerName: profile.displayName || 'Anonymous',
             isClose: result.isClose
           }
         });
       }
     } catch (error) {
-      console.error('Error submitting guess:', error);
+      console.error('❌ Error submitting guess:', error);
     }
-  }, [currentWord, isDrawer, roomId, user?.id, user?.displayName, timeRemaining, dispatch]);
+  }, [currentWord, isDrawer, hasGuessedCorrectly, roomId, user?.id, profile?.displayName, timeRemaining, calculatePoints, dispatch, getChannel]);
 
   // Handle word selection
   const handleWordSelect = useCallback(async (selectedWord) => {
-    if (!isDrawer) return;
+    if (!isDrawer || !selectedWord) {
+      console.log('🚫 Word selection blocked:', { 
+        isDrawer, 
+        hasSelectedWord: !!selectedWord 
+      });
+      return;
+    }
+
+    console.log('📝 Drawer selecting word:', selectedWord);
 
     try {
-      const response = await callEdgeFunction('start-round', {
+      // Immediately update UI state to prevent modal from showing
+      dispatch(setWordOptions([]));
+      dispatch(selectWord(selectedWord));
+      
+      // Start the round with selected word
+      const roundResult = await callEdgeFunction('start-round', {
         roomId,
         drawerId: user.id,
         selectedWord,
-        roundNumber: currentRound,
-        usedWords: [], // This should come from game state
-        drawingTime: 60
+        roundNumber: currentRound || 1,
+        turnIndex: currentTurnIndex || 0,
+        turnOrder: turnOrder && turnOrder.length > 0 ? turnOrder : players.map(p => p.id),
+        usedWords: [], // TODO: track used words
+        drawingTime: gameSettings?.drawingTime || settings?.drawingTime || 60,
+        theme: gameSettings?.theme || settings?.theme || 'default',
+        action: 'start_round'
       });
 
-      // Broadcast round start
-      const channel = supabase.channel(`room:${roomId}`);
-      channel.send({
-        type: 'broadcast',
-        event: 'game:round',
-        payload: response
-      });
+      console.log('📦 start-round response after word selection:', roundResult);
+      
+      // Validate the response
+      if (!roundResult || !roundResult.selectedWord) {
+        throw new Error('Invalid response from start-round function');
+      }
+      
+      // Broadcast word selection (without revealing the word to others)
+      const channel = getChannel();
+      if (channel && channel.state === 'joined') {
+        console.log('📡 Broadcasting word selection');
+        channel.send({
+          type: 'broadcast',
+          event: 'word:selected',
+          payload: {
+            word: selectedWord,
+            wordLength: selectedWord.length,
+            drawerId: user.id
+          }
+        });
+
+        // Start the round timer
+        console.log('⏰ Starting round timer');
+        const initialTime = gameSettings?.drawingTime || settings?.drawingTime || 60;
+        console.log('⏰ Timer initialized to:', initialTime, 'seconds');
+        dispatch(updateTimer(initialTime));
+        
+        // Ensure drawing permissions are set correctly after word selection
+        console.log('🎨 [WORD SELECT] Confirming drawing permissions after word selection');
+        dispatch(setCanDraw(true));
+        
+        // Broadcast timer start to all players
+        setTimeout(() => {
+          if (channel && channel.state === 'joined') {
+            channel.send({
+              type: 'broadcast',
+              event: 'timer:update',
+              payload: {
+                timeRemaining: initialTime
+              }
+            });
+          }
+        }, 100);
+      } else {
+        console.warn('⚠️ Channel not available for broadcasting');
+      }
     } catch (error) {
-      console.error('Error starting round:', error);
+      console.error('❌ Error selecting word:', error);
+      // Restore word options on error
+      if (wordOptions.length === 0) {
+        console.log('🔄 Attempting to regenerate word options due to error');
+        try {
+          const wordResult = await callEdgeFunction('start-round', {
+            roomId,
+            drawerId: user.id,
+            roundNumber: currentRound || 1,
+            turnIndex: currentTurnIndex || 0,
+            turnOrder: turnOrder && turnOrder.length > 0 ? turnOrder : players.map(p => p.id),
+            usedWords: [],
+            drawingTime: gameSettings?.drawingTime || settings?.drawingTime || 60,
+            theme: gameSettings?.theme || settings?.theme || 'default',
+            action: 'generate_words'
+          });
+          
+          if (wordResult?.wordOptions) {
+            dispatch(setWordOptions(wordResult.wordOptions));
+            console.log('✅ Word options regenerated successfully');
+          }
+        } catch (regenerateError) {
+          console.error('❌ Failed to regenerate word options:', regenerateError);
+        }
+      }
     }
-  }, [isDrawer, roomId, user?.id, currentRound]);
+  }, [isDrawer, roomId, user?.id, dispatch, currentRound, currentTurnIndex, turnOrder, players, settings, getChannel, wordOptions]);
 
-  if (isGameOver) {
+  // Handle player leaving (cleanup)
+  useEffect(() => {
+    const handleBeforeUnload = async () => {
+      if (roomId && user?.id) {
+        try {
+          // Don't await this since the page is closing
+          callEdgeFunction('join-room', {
+            roomId,
+            playerId: user.id,
+            action: 'leave'
+          });
+        } catch (error) {
+          console.error('Error leaving room on unload:', error);
+        }
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden && roomId && user?.id) {
+        // User switched tabs or minimized browser, but don't leave room
+        console.log('🙈 User went away, but staying in room');
+      } else if (!document.hidden && roomId && user?.id) {
+        console.log('👀 User came back to the game');
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [roomId, user?.id]);
+
+  // Cleanup when component unmounts (navigation away)
+  useEffect(() => {
+    return () => {
+      if (roomId && user?.id && profile) {
+        console.log('🚪 GamePage unmounting, leaving room');
+        
+        try {
+          // Broadcast leave event to other players first
+          const channel = getChannel();
+          if (channel && channel.state === 'joined') {
+            channel.send({
+              type: 'broadcast',
+              event: 'player:leave',
+              payload: {
+                playerId: user.id,
+                playerName: profile.displayName || 'Anonymous',
+                timestamp: Date.now()
+              }
+            });
+          }
+          
+          // Then actually leave the room
+          callEdgeFunction('join-room', {
+            roomId,
+            playerId: user.id,
+            action: 'leave'
+          }).catch(error => {
+            console.error('Error leaving room on unmount:', error);
+          });
+        } catch (error) {
+          console.error('Error during cleanup:', error);
+        }
+      }
+    };
+  }, [roomId, user?.id, profile, getChannel]);
+
+  // Defensive check - only show game over screen if game is actually over
+  // Prevent premature game over screen due to state corruption
+  const shouldShowGameOver = isGameOver && (
+    !isActive || // Game is definitely inactive
+    players.length <= 1 || // Actually insufficient players
+    (currentRound > totalRounds) // Game completed all rounds
+  );
+
+  if (shouldShowGameOver) {
+    console.log('🎉 Rendering GameOverScreen');
+    console.log('🎉 Game over conditions:', { isGameOver, currentWord, isActive, playersCount: players.length });
     return <GameOverScreen />;
+  } else if (isGameOver && !shouldShowGameOver) {
+    console.warn('⚠️ isGameOver is true but conditions not met, forcing game to continue');
+    console.warn('⚠️ Diagnostic:', { isGameOver, currentWord, isActive, playersCount: players.length });
+    // Force reset the game over state if it's incorrectly set
+    dispatch(resetGameOverState());
   }
+
+  console.log('🎮 Rendering main GamePage');
 
   return (
     <div className="game-page">
-      <div className="game-header">
-        <div className="round-info">
-          <h2>Round {currentRound} of {totalRounds}</h2>
-          <GameTimer />
+      {/* Correct Guess Notification */}
+      {showCorrectGuess && (
+        <div className="correct-guess-notification">
+          🎉 Correct! Well done! 🎉
+        </div>
+      )}
+      
+      {/* Compact Top Header */}
+      <div className="game-header-compact">
+        <div className="round-info-compact">
+          <h3>Round {currentRound}/{totalRounds} • Turn {(currentTurnIndex || 0) + 1}/{turnOrder.length}</h3>
         </div>
         
-        <div className="word-display">
+        <div className="word-display-compact">
           {isDrawer && currentWord ? (
             <div className="current-word">
-              Draw: <strong>{currentWord}</strong>
+              <span className="word-text">{currentWord}</span>
+            </div>
+          ) : (currentWord && wordLength > 0) ? (
+            <div className="word-blanks">
+              <span className="word-label">({wordLength} letters)</span>
+              <span className="masked-word">{maskedWord}</span>
+            </div>
+          ) : wordLength > 0 ? (
+            <div className="word-blanks">
+              <span className="word-label">({wordLength} letters)</span>
+              <span className="masked-word">{Array(wordLength).fill('_').join(' ')}</span>
             </div>
           ) : (
-            <div className="word-blanks">
-              {wordLength > 0 && (
-                <div className="word-length">
-                  Word: {Array(wordLength).fill('_').join(' ')}
-                </div>
-              )}
-            </div>
+            <div className="waiting-word">Waiting...</div>
           )}
         </div>
 
-        <div className="player-info">
-          {isDrawer ? (
-            <span className="drawer-indicator">🎨 You're drawing!</span>
-          ) : (
-            <span className="guesser-indicator">
-              🤔 {players.find(p => p.id === drawerId)?.displayName || 'Someone'} is drawing
-            </span>
-          )}
+        <div className="timer-compact">
+          {isActive && <GameTimer />}
         </div>
       </div>
 
-      {/* Word selection for drawer */}
+      {/* Word selection modal */}
       {isDrawer && wordOptions.length > 0 && !currentWord && (
         <WordSelection
           words={wordOptions}
@@ -229,17 +1520,52 @@ const GamePage = () => {
         />
       )}
 
-      <div className="game-content">
-        <div className="drawing-area">
-          <Canvas onPathUpdate={handlePathUpdate} />
-          <DrawingTools />
+      {/* Main Game Content - Three Column Layout */}
+      <div className="game-content-layout">
+        {/* Left: Leaderboard */}
+        <div className="sidebar-left">
+          <Leaderboard />
         </div>
 
-        <div className="game-sidebar">
-          <Leaderboard />
-          <ChatBox onGuessSubmit={handleGuessSubmit} />
+        {/* Center: Canvas and Drawing Tools */}
+        <div className="canvas-section">
+          <div className="player-status-compact">
+            {isDrawer ? (
+              <span className="drawer-indicator">🎨 Drawing</span>
+            ) : drawerId ? (
+              <span className="guesser-indicator">
+                👀 {players.find(p => p.id === drawerId)?.displayName || 'Someone'} drawing
+              </span>
+            ) : (
+              <span className="waiting-drawer">⏳ Waiting...</span>
+            )}
+            {hasGuessedCorrectly && !isDrawer && (
+              <span className="guessed-correctly">✅</span>
+            )}
+          </div>
+          
+          <Canvas 
+            onPathUpdate={handlePathUpdate} 
+            onCanvasClear={handleCanvasClear}
+          />
+          
+          {isDrawer && (
+            <div className="drawing-tools-compact">
+              <DrawingTools onCanvasClear={handleCanvasClear} />
+            </div>
+          )}
+        </div>
+
+        {/* Right: Chat */}
+        <div className="sidebar-right">
+          <ChatBox 
+            onGuessSubmit={handleGuessSubmit}
+            canGuess={true}
+          />
         </div>
       </div>
+
+
     </div>
   );
 };
@@ -247,8 +1573,47 @@ const GamePage = () => {
 // Game Over Screen Component
 const GameOverScreen = () => {
   const navigate = useNavigate();
-  const { winner, teamScores, scores } = useSelector(state => state.game);
-  const { players, settings } = useSelector(state => state.room);
+  const dispatch = useDispatch();
+  const { 
+    winner, 
+    teamScores, 
+    scores, 
+    settings: gameSettings,
+    winnerType,
+    isTeamGame: gameIsTeamGame,
+    finalScores
+  } = useSelector(state => state.game);
+  const { players, settings, roomId } = useSelector(state => state.room);
+  const { user } = useSelector(state => state.auth);
+
+  // Determine if this is a team game
+  const isTeamGame = gameIsTeamGame || gameSettings?.isTeamGame || settings?.isTeamGame;
+  const actualScores = finalScores || scores;
+
+  const sortedPlayers = useMemo(() => {
+    return players
+      .map(player => ({
+        ...player,
+        score: actualScores[player.id] || 0
+      }))
+      .sort((a, b) => b.score - a.score);
+  }, [players, actualScores]);
+
+  // Sort teams by total score for team games
+  const sortedTeams = useMemo(() => {
+    if (!isTeamGame || !teamScores) return [];
+    
+    return Object.entries(teamScores)
+      .map(([teamName, teamData]) => ({
+        name: teamName,
+        ...teamData
+      }))
+      .sort((a, b) => b.totalScore - a.totalScore);
+  }, [isTeamGame, teamScores]);
+
+  // Note: Game cleanup is now handled authoritatively when the game ends,
+  // not when the GameOverScreen mounts. This prevents race conditions and
+  // ensures all players see consistent game end state.
 
   const handlePlayAgain = () => {
     navigate('/');
@@ -259,23 +1624,83 @@ const GameOverScreen = () => {
       <div className="game-over-card">
         <h1>🎉 Game Over! 🎉</h1>
         
-        {settings.isTeamGame ? (
-          <div className="team-results">
-            <h2>Team Results</h2>
-            {/* Team standings */}
-            <div className="winning-team">
-              {/* Determine winning team */}
+        <div className="final-standings">
+          <h2>Final Results</h2>
+          
+          {/* Winner Announcement */}
+          <div className="winner-announcement">
+            <div className="winner-crown">👑</div>
+            {isTeamGame && winnerType === 'team' ? (
+              <>
+                <div className="winner-name">Team {winner || 'Unknown'} Wins!</div>
+                <div className="winner-score">
+                  {sortedTeams[0]?.totalScore || 0} total points
+                  <br />
+                  <small>({sortedTeams[0]?.averageScore || 0} avg per player)</small>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="winner-name">{sortedPlayers[0]?.displayName || 'Unknown'}</div>
+                <div className="winner-score">{sortedPlayers[0]?.score || 0} points</div>
+              </>
+            )}
+          </div>
+
+          {/* Team Standings for Team Games */}
+          {isTeamGame && sortedTeams.length > 0 && (
+            <div className="team-standings">
+              <h3>Team Results</h3>
+              <div className="team-standings-list">
+                {sortedTeams.map((team, index) => (
+                  <div key={team.name} className={`team-standing-item ${index === 0 ? 'winner' : ''}`}>
+                    <span className="team-position">#{index + 1}</span>
+                    <span className="team-name">Team {team.name}</span>
+                    <div className="team-stats">
+                      <span className="team-total">{team.totalScore} total</span>
+                      <span className="team-average">({team.averageScore} avg)</span>
+                      <span className="team-players">{team.playerCount} players</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* Individual Player Standings */}
+          <div className="player-standings">
+            <h3>{isTeamGame ? 'Individual Scores' : 'Final Standings'}</h3>
+            <div className="standings-list">
+              {sortedPlayers.map((player, index) => (
+                <div key={player.id} className={`standing-item ${index === 0 && !isTeamGame ? 'winner' : ''}`}>
+                  <span className="position">#{index + 1}</span>
+                  <span className="player-avatar">
+                    {player.avatarUrl && !player.avatarUrl.includes('🤷') ? (
+                      <img 
+                        src={player.avatarUrl} 
+                        alt={player.displayName}
+                        className="avatar-image"
+                        onError={(e) => {
+                          e.target.style.display = 'none';
+                          e.target.nextSibling.style.display = 'inline';
+                        }}
+                      />
+                    ) : null}
+                    <span className={player.avatarUrl && !player.avatarUrl.includes('🤷') ? 'avatar-fallback hidden' : 'avatar-fallback'}>
+                      🤷
+                    </span>
+                  </span>
+                  <span className="player-name">
+                    {player.displayName}
+                    {isTeamGame && player.team && (
+                      <span className="player-team"> (Team {player.team})</span>
+                    )}
+                  </span>
+                  <span className="player-score">{player.score || 0} pts</span>
+                </div>
+              ))}
             </div>
           </div>
-        ) : (
-          <div className="individual-results">
-            <h2>Final Standings</h2>
-            {/* Individual leaderboard */}
-          </div>
-        )}
-
-        <div className="final-stats">
-          {/* Game statistics */}
         </div>
 
         <div className="game-over-actions">

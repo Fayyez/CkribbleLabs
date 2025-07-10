@@ -1,21 +1,14 @@
-
-import React, { useEffect } from 'react';
-import { useSelector, useDispatch } from 'react-redux';
-import { updateTimer } from '../redux/slices/gameSlice';
+import React from 'react';
+import { useSelector } from 'react-redux';
 
 const GameTimer = () => {
-  const { timeRemaining, isActive } = useSelector(state => state.game);
-  const dispatch = useDispatch();
+  const { timeRemaining } = useSelector(state => state.game);
 
-  useEffect(() => {
-    if (!isActive || timeRemaining <= 0) return;
-
-    const timer = setInterval(() => {
-      dispatch(updateTimer(timeRemaining - 1));
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [isActive, timeRemaining, dispatch]);
+  const getTimerColor = () => {
+    if (timeRemaining <= 10) return '#dc3545'; // Red
+    if (timeRemaining <= 30) return '#ffc107'; // Yellow
+    return '#28a745'; // Green
+  };
 
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
@@ -23,23 +16,45 @@ const GameTimer = () => {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const getTimerClass = () => {
-    if (timeRemaining <= 10) return 'timer urgent';
-    if (timeRemaining <= 30) return 'timer warning';
-    return 'timer normal';
-  };
-
   return (
-    <div className={getTimerClass()}>
-      <div className="timer-display">
-        ⏰ {formatTime(timeRemaining)}
+    <div className="timer-compact">
+      <div 
+        className="timer-display"
+        style={{ 
+          color: getTimerColor(),
+          fontWeight: timeRemaining <= 10 ? 'bold' : 'normal'
+        }}
+      >
+        ⏱️ {formatTime(timeRemaining)}
       </div>
-      <div className="timer-bar">
-        <div 
-          className="timer-fill"
-          style={{ width: `${(timeRemaining / 60) * 100}%` }}
-        />
-      </div>
+
+      {/* Compact CSS Styles */}
+      <style jsx>{`
+        .timer-compact {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 14px;
+          font-weight: 600;
+        }
+
+        .timer-display {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          transition: all 0.3s ease;
+        }
+
+        @keyframes pulse {
+          0% { transform: scale(1); }
+          50% { transform: scale(1.05); }
+          100% { transform: scale(1); }
+        }
+
+        .timer-display {
+          animation: ${timeRemaining <= 10 ? 'pulse 1s infinite' : 'none'};
+        }
+      `}</style>
     </div>
   );
 };

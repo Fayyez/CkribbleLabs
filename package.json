@@ -7,7 +7,13 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "deploy:functions": "powershell -ExecutionPolicy Bypass -File deploy-functions.ps1",
+    "deploy:functions:dry": "powershell -ExecutionPolicy Bypass -File deploy-functions.ps1 -DryRun",
+    "deploy:functions:verbose": "powershell -ExecutionPolicy Bypass -File deploy-functions.ps1 -Verbose",
+    "deploy:functions:unix": "./deploy-functions.sh",
+    "deploy:functions:unix:dry": "./deploy-functions.sh --dry-run",
+    "deploy:functions:unix:verbose": "./deploy-functions.sh --verbose"
   },
   "eslintConfig": {
     "extends": [
@@ -39,7 +45,6 @@
   "bugs": {
     "url": "https://github.com/Fayyez/CkribbleLabs/issues"
   },
-  "homepage": "https://github.com/Fayyez/CkribbleLabs#readme",
   "dependencies": {
     "@reduxjs/toolkit": "^2.8.2",
     "@supabase/supabase-js": "^2.39.0",
